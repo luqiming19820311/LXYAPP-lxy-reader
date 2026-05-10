@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Subscription {
+  id            String        @id @default(cuid())
+  title         String
+  sourceType    String
+  inputUrl      String        @unique
+  feedUrl       String        @unique
+  siteUrl       String?
+  domainKey     String
+  rsshubRoute   String?
+  faviconUrl    String?
+  status        String        @default("active")
+  lastError     String?
+  lastFetchedAt DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  items         ContentItem[]
+}
+
+model ContentItem {
+  id             String          @id @default(cuid())
+  subscriptionId String
+  externalId     String?
+  title          String
+  author         String?
+  contentUrl     String
+  publishedAt    DateTime?
+  summary        String?
+  contentHtml    String?
+  thumbnailUrl   String?
+  mediaType      String
+  platform       String
+  embedUrl       String?
+  rawPayload     String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  subscription   Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  state          UserItemState?
+  aiSummary      AiSummary?
+
+  @@unique([subscriptionId, externalId])
+  @@index([subscriptionId])
+  @@index([platform])
+  @@index([mediaType])
+  @@index([publishedAt])
+}
+
+model UserItemState {
+  id          String      @id @default(cuid())
+  itemId      String      @unique
+  isRead      Boolean     @default(false)
+  isFavorite  Boolean     @default(false)
+  readAt      DateTime?
+  favoritedAt DateTime?
+  item        ContentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}
+
+model AiSummary {
+  id            String      @id @default(cuid())
+  itemId        String      @unique
+  summaryText   String
+  model         String
+  promptVersion String
+  createdAt     DateTime    @default(now())
+  item          ContentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}
