@@ -2,6 +2,53 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { fetchNormalizedItems, previewFeed } from "./feed";
 
+type OpmlImportInput = {
+  title: string;
+  feedUrl: string;
+  siteUrl?: string | null;
+};
+
+export function getFriendlyErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : `${error}`;
+
+  if (message.includes("Status code 403")) {
+    return "RSSHub 返回 403，公共实例可能被 Cloudflare 或目标站点拦截。";
+  }
+
+  if (message.includes("Status code 404")) {
+    return "订阅地址返回 404，请检查 feed URL 是否有效。";
+  }
+
+  if (message.includes("Invalid URL")) {
+    return "订阅地址格式无效，请输入完整 URL 或 rsshub:// 链接。";
+  }
+
+  if (
+    message.includes("ENOTFOUND") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("fetch failed")
+  ) {
+    return "网络连接失败，请检查网络、代理或 RSSHub Base URL。";
+  }
+
+  if (message.includes("Non-whitespace before first tag")) {
+    return "feed 解析失败，目标返回的不是有效 RSS/Atom 内容。";
+  }
+
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2002") {
+      return "订阅源已存在，已复用现有记录。";
+    }
+
+    if (error.code.startsWith("P20")) {
+      return "数据库写入失败，请稍后重试。";
+    }
+  }
+
+  return message || "操作失败。";
+}
+
 export async function listSubscriptions() {
   return prisma.subscription.findMany({
     orderBy: { createdAt: "asc" },
@@ -37,6 +84,9 @@ export async function getItem(id: string) {
 
 export async function createSubscription(inputUrl: string) {
   const preview = await previewFeed(inputUrl);
+  const existingSubscription = await prisma.subscription.findUnique({
+    where: { feedUrl: preview.feedUrl },
+  });
 
   const subscription = await prisma.subscription.upsert({
     where: { feedUrl: preview.feedUrl },
@@ -60,10 +110,140 @@ export async function createSubscription(inputUrl: string) {
 
   await fetchSubscription(subscription.id);
 
-  return prisma.subscription.findUnique({
+  const refreshedSubscription = await prisma.subscription.findUnique({
     where: { id: subscription.id },
     include: { _count: { select: { items: true } } },
   });
+
+  return {
+    subscription: refreshedSubscription,
+    alreadyExisted: Boolean(existingSubscription),
+  };
+}
+
+export async function updateSubscription(
+  subscriptionId: string,
+  input: {
+    title?: string;
+    status?: string;
+  },
+) {
+  const data: Prisma.SubscriptionUpdateInput = {};
+
+  if (typeof input.title === "string") {
+    const title = input.title.trim();
+
+    if (!title) {
+      throw new Error("来源名称不能为空。");
+    }
+
+    data.title = title;
+  }
+
+  if (typeof input.status === "string") {
+    if (!["active", "inactive"].includes(input.status)) {
+      throw new Error("订阅源状态无效。");
+    }
+
+    data.status = input.status;
+    if (input.status === "inactive") {
+      data.lastError = null;
+    }
+  }
+
+  if (Object.keys(data).length === 0) {
+    throw new Error("没有可更新的字段。");
+  }
+
+  return prisma.subscription.update({
+    where: { id: subscriptionId },
+    data,
+    include: { _count: { select: { items: true } } },
+  });
+}
+
+export async function deleteSubscription(subscriptionId: string) {
+  return prisma.subscription.delete({
+    where: { id: subscriptionId },
+  });
+}
+
+export async function importOpmlSubscriptions(inputs: OpmlImportInput[]) {
+  const results = [];
+
+  for (const input of inputs) {
+    const title = input.title.trim() || input.feedUrl;
+    const feedUrl = input.feedUrl.trim();
+
+    if (!feedUrl) {
+      continue;
+    }
+
+    try {
+      const existingSubscription = await prisma.subscription.findUnique({
+        where: { feedUrl },
+      });
+      const parsedUrl = new URL(feedUrl);
+      const subscription = await prisma.subscription.upsert({
+        where: { feedUrl },
+        update: {
+          title,
+          siteUrl: input.siteUrl || undefined,
+          status: existingSubscription?.status === "inactive" ? "inactive" : "active",
+          lastError: null,
+        },
+        create: {
+          title,
+          sourceType: getSourceTypeFromUrl(feedUrl),
+          inputUrl: feedUrl,
+          feedUrl,
+          siteUrl: input.siteUrl || null,
+          domainKey: parsedUrl.hostname.replace(/^www\./, ""),
+          status: "active",
+        },
+      });
+
+      results.push({
+        title: subscription.title,
+        feedUrl: subscription.feedUrl,
+        status: existingSubscription ? ("updated" as const) : ("created" as const),
+      });
+    } catch (error) {
+      results.push({
+        title,
+        feedUrl,
+        status: "failed" as const,
+        error: getFriendlyErrorMessage(error),
+      });
+    }
+  }
+
+  return {
+    imported: results.filter((result) => result.status === "created").length,
+    updated: results.filter((result) => result.status === "updated").length,
+    failed: results.filter((result) => result.status === "failed").length,
+    results,
+  };
+}
+
+function getSourceTypeFromUrl(feedUrl: string) {
+  if (feedUrl.includes("youtube.com") || feedUrl.includes("youtu.be")) {
+    return "youtube";
+  }
+
+  if (feedUrl.includes("bilibili.com")) {
+    return "bilibili";
+  }
+
+  if (feedUrl.includes("weibo.com")) {
+    return "weibo";
+  }
+
+  if (feedUrl.includes("rsshub")) {
+    return "rsshub";
+  }
+
+  return "rss";
 }
 
 export async function fetchSubscription(subscriptionId: string) {
@@ -75,12 +255,19 @@ export async function fetchSubscription(subscriptionId: string) {
     throw new Error("订阅源不存在。");
   }
 
+  if (subscription.status === "inactive") {
+    throw new Error("订阅源已停用。");
+  }
+
   await prisma.subscription.update({
     where: { id: subscriptionId },
     data: { status: "fetching", lastError: null },
   });
 
   try {
+    const beforeCount = await prisma.contentItem.count({
+      where: { subscriptionId },
+    });
     const normalizedItems = await fetchNormalizedItems(subscription.feedUrl);
 
     for (const item of normalizedItems) {
@@ -128,26 +315,54 @@ export async function fetchSubscription(subscriptionId: string) {
       });
     }
 
-    return prisma.subscription.update({
+    const afterCount = await prisma.contentItem.count({
+      where: { subscriptionId },
+    });
+    const updatedSubscription = await prisma.subscription.update({
       where: { id: subscriptionId },
       data: {
         status: "active",
         lastError: null,
         lastFetchedAt: new Date(),
       },
+      include: { _count: { select: { items: true } } },
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "抓取失败。";
 
-    await prisma.subscription.update({
+    return {
+      subscription: updatedSubscription,
+      result: {
+        subscriptionId,
+        title: updatedSubscription.title,
+        status: "success" as const,
+        fetchedCount: normalizedItems.length,
+        newCount: Math.max(afterCount - beforeCount, 0),
+      },
+    };
+  } catch (error) {
+    const message = getFriendlyErrorMessage(error);
+
+    const failedSubscription = await prisma.subscription.update({
       where: { id: subscriptionId },
       data: {
         status: "failed",
         lastError: message,
       },
+      include: { _count: { select: { items: true } } },
     });
 
-    throw error;
+    const wrappedError = new Error(message);
+    wrappedError.cause = {
+      subscription: failedSubscription,
+      result: {
+        subscriptionId,
+        title: failedSubscription.title,
+        status: "failed" as const,
+        fetchedCount: 0,
+        newCount: 0,
+        error: message,
+      },
+    };
+    throw wrappedError;
   }
 }
 

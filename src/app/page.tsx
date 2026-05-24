@@ -6,7 +6,9 @@ import {
   Check,
   ChevronDown,
   CirclePlay,
+  Copy,
   Database,
+  Download,
   ExternalLink,
   EyeOff,
   FileText,
@@ -14,7 +16,9 @@ import {
   Layers3,
   Moon,
   MoreVertical,
+  Pencil,
   Plus,
+  Power,
   RefreshCcw,
   Rss,
   Save,
@@ -22,12 +26,14 @@ import {
   Settings,
   Sparkles,
   Star,
+  Trash2,
   Sun,
+  Upload,
   UserCircle,
   Video,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, SyntheticEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type View = "all" | "videos" | "articles" | "favorites" | "settings";
@@ -42,6 +48,8 @@ type FeedItem = {
   type: ItemType;
   title: string;
   excerpt: string;
+  bodyText: string;
+  platform: string;
   time: string;
   read: boolean;
   favorite: boolean;
@@ -59,7 +67,7 @@ type SourceItem = {
   name: string;
   initial: string;
   unread: number;
-  status: "online" | "failed" | "idle";
+  status: "online" | "failed" | "idle" | "inactive";
   color: string;
 };
 
@@ -92,7 +100,13 @@ type ApiSubscription = {
   id: string;
   title: string;
   sourceType: string;
+  inputUrl: string;
+  feedUrl: string;
+  siteUrl: string | null;
   status: string;
+  lastError: string | null;
+  lastFetchedAt: string | null;
+  createdAt: string;
   _count?: {
     items: number;
   };
@@ -109,6 +123,11 @@ type PreviewResult = {
   }>;
 };
 
+type AiConfig = {
+  configured: boolean;
+  model: string;
+};
+
 type ItemStateResponse = {
   state?: {
     isRead: boolean;
@@ -117,7 +136,62 @@ type ItemStateResponse = {
   error?: string;
 };
 
-type ItemStatePatch = Partial<Pick<FeedItem, "read" | "favorite">>;
+type SummaryResponse = {
+  summary?: {
+    summaryText: string;
+    model: string;
+    promptVersion: string;
+    createdAt: string;
+  };
+  error?: string;
+};
+
+type SubscriptionActionResponse = {
+  subscription?: ApiSubscription;
+  alreadyExisted?: boolean;
+  ok?: boolean;
+  error?: string;
+};
+
+type OpmlImportResult = {
+  imported: number;
+  updated: number;
+  failed: number;
+  results: Array<{
+    title: string;
+    feedUrl: string;
+    status: "created" | "updated" | "failed";
+    error?: string;
+  }>;
+  error?: string;
+};
+
+type RefreshResult = {
+  subscriptionId: string;
+  title: string;
+  status: "success" | "failed";
+  fetchedCount: number;
+  newCount: number;
+  error?: string;
+};
+
+type SubscriptionFetchResponse = {
+  subscription?: ApiSubscription;
+  result?: RefreshResult;
+  error?: string;
+};
+
+type RefreshReport = {
+  scope: string;
+  total: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  results: RefreshResult[];
+};
+
+type ItemPatch = Partial<Pick<FeedItem, "read" | "favorite" | "aiSummary">>;
+type VideoPlayerStatus = "idle" | "loading" | "playing" | "blocked";
 
 const navigation = [
   { id: "all" as const, label: "All Feeds", icon: Layers3 },
@@ -143,6 +217,11 @@ function toFeedItem(item: ApiItem): FeedItem {
     type,
     title: item.title,
     excerpt: item.summary || stripHtml(item.contentHtml) || "No preview available.",
+    bodyText:
+      stripHtml(item.contentHtml) ||
+      item.summary ||
+      "No detailed text is available for this item yet.",
+    platform: item.platform,
     time: formatRelativeTime(item.publishedAt),
     read: item.state?.isRead ?? false,
     favorite: item.state?.isFavorite ?? false,
@@ -169,7 +248,9 @@ function toSourceItem(
     initial: subscription.title.slice(0, 1).toUpperCase(),
     unread: subscriptionItems.filter((item) => !item.read).length,
     status:
-      subscription.status === "failed"
+      subscription.status === "inactive"
+        ? "inactive"
+        : subscription.status === "failed"
         ? "failed"
         : subscription.status === "active"
           ? "online"
@@ -217,6 +298,19 @@ function formatRelativeTime(value: string | null) {
 
   const diffDays = Math.floor(diffHours / 24);
   return diffDays === 1 ? "Yesterday" : `${diffDays}d ago`;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "Never";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function filterItemsByView(items: FeedItem[], view: View) {
@@ -289,6 +383,135 @@ function getRequestErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function copyTextFallback(value: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("copy failed");
+  }
+}
+
+function getPlayableEmbedUrl(item: FeedItem) {
+  if (item.embedUrl) {
+    return item.embedUrl;
+  }
+
+  if (item.platform === "youtube") {
+    const videoId = getYouTubeVideoId(item.contentUrl);
+    return videoId ? `https://www.youtube.com/embed/${videoId}` : "";
+  }
+
+  if (item.platform === "bilibili") {
+    const bvid = item.contentUrl.match(/BV[a-zA-Z0-9]+/)?.[0];
+    return bvid ? buildBilibiliEmbedUrl(bvid) : "";
+  }
+
+  return "";
+}
+
+function buildBilibiliEmbedUrl(bvid: string) {
+  const url = new URL("https://player.bilibili.com/player.html");
+  url.searchParams.set("bvid", bvid);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("autoplay", "1");
+  url.searchParams.set("high_quality", "1");
+  url.searchParams.set("danmaku", "0");
+  return url.toString();
+}
+
+function getAutoplayEmbedUrl(embedUrl: string) {
+  try {
+    const url = new URL(embedUrl);
+    const isYouTube = url.hostname.includes("youtube");
+    const isBilibili = url.hostname.includes("bilibili");
+
+    if (isBilibili) {
+      url.searchParams.set("autoplay", "1");
+      url.searchParams.set("high_quality", "1");
+      url.searchParams.set("danmaku", "0");
+      return url.toString();
+    }
+
+    url.searchParams.set("autoplay", "1");
+    url.searchParams.set("mute", "0");
+    url.searchParams.set("playsinline", "1");
+    url.searchParams.set("rel", "0");
+    url.searchParams.set("enablejsapi", "1");
+
+    if (typeof window !== "undefined" && isYouTube) {
+      url.searchParams.set("origin", window.location.origin);
+      url.searchParams.set("widget_referrer", window.location.href);
+    }
+
+    return url.toString();
+  } catch {
+    return embedUrl;
+  }
+}
+
+function getYouTubeVideoId(value: string) {
+  try {
+    const url = new URL(value);
+
+    if (url.hostname.includes("youtu.be")) {
+      return url.pathname.split("/").filter(Boolean)[0] || "";
+    }
+
+    const watchId = url.searchParams.get("v");
+
+    if (watchId) {
+      return watchId;
+    }
+
+    const [firstSegment, secondSegment] = url.pathname
+      .split("/")
+      .filter(Boolean);
+
+    if (["embed", "shorts", "live"].includes(firstSegment)) {
+      return secondSegment || "";
+    }
+
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+function parseYouTubePlayerMessage(value: string) {
+  try {
+    return JSON.parse(value) as {
+      event?: string;
+      id?: string;
+      info?: number | { playerState?: number };
+    };
+  } catch {
+    return null;
+  }
+}
+
+function postYouTubeCommand(playerId: string, command: string) {
+  const iframe = document.getElementById(playerId) as HTMLIFrameElement | null;
+
+  iframe?.contentWindow?.postMessage(
+    JSON.stringify({
+      event: "command",
+      func: command,
+      args: [],
+      id: playerId,
+    }),
+    "https://www.youtube.com",
+  );
+}
+
 export default function Home() {
   const [activeView, setActiveView] = useState<View>("all");
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -303,20 +526,32 @@ export default function Home() {
   const [isConfirming, setIsConfirming] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [refreshReport, setRefreshReport] = useState<RefreshReport | null>(null);
+  const [copiedItemId, setCopiedItemId] = useState("");
+  const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [busyItemIds, setBusyItemIds] = useState<Set<string>>(new Set());
+  const [summarizingItemIds, setSummarizingItemIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [aiConfig, setAiConfig] = useState<AiConfig>({
+    configured: false,
+    model: "gpt-5",
+  });
   const [subscriptionInput, setSubscriptionInput] = useState(
     "rsshub://youtube/user/%40xiao_lin_shuo",
   );
-  const stateOverridesRef = useRef<Record<string, ItemStatePatch>>({});
+  const stateOverridesRef = useRef<Record<string, ItemPatch>>({});
 
   async function loadData() {
     try {
-      const [itemsResponse, subscriptionsResponse] = await Promise.all([
-        fetchWithTimeout("/api/items", {}, 10000),
-        fetchWithTimeout("/api/subscriptions", {}, 10000),
-      ]);
+      const [itemsResponse, subscriptionsResponse, aiConfigResponse] =
+        await Promise.all([
+          fetchWithTimeout("/api/items", {}, 10000),
+          fetchWithTimeout("/api/subscriptions", {}, 10000),
+          fetchWithTimeout("/api/ai/config", {}, 10000),
+        ]);
 
       if (!itemsResponse.ok || !subscriptionsResponse.ok) {
         throw new Error("数据加载失败，请重试。");
@@ -326,6 +561,9 @@ export default function Home() {
       const subscriptionsJson = (await subscriptionsResponse.json()) as {
         subscriptions: ApiSubscription[];
       };
+      const nextAiConfig = aiConfigResponse.ok
+        ? ((await aiConfigResponse.json()) as AiConfig)
+        : null;
       const nextItems = itemsJson.items.map((item) => ({
         ...toFeedItem(item),
         ...stateOverridesRef.current[item.id],
@@ -333,8 +571,15 @@ export default function Home() {
 
       setItems(nextItems);
       setSubscriptions(subscriptionsJson.subscriptions);
+      if (nextAiConfig) {
+        setAiConfig(nextAiConfig);
+      }
       setLoadError("");
-      setSelectedId((current) => current || nextItems[0]?.id || "");
+      setSelectedId((current) =>
+        nextItems.some((item) => item.id === current)
+          ? current
+          : nextItems[0]?.id || "",
+      );
     } catch (error) {
       setLoadError(getRequestErrorMessage(error, "数据加载失败，请重试。"));
     } finally {
@@ -365,7 +610,7 @@ export default function Home() {
   const isEmptyState = activeView === "all" && items.length === 0;
   const unreadCount = items.filter((item) => !item.read).length;
 
-  function patchItem(id: string, patch: ItemStatePatch) {
+  function patchItem(id: string, patch: ItemPatch) {
     setItems((current) =>
       current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
@@ -395,7 +640,7 @@ export default function Home() {
   async function mutateItemState(
     id: string,
     endpoint: "read" | "unread" | "favorite" | "unfavorite",
-    patch: ItemStatePatch,
+    patch: ItemPatch,
   ) {
     const previous = items.find((item) => item.id === id);
 
@@ -496,20 +741,105 @@ export default function Home() {
     window.location.assign(item.contentUrl);
   }
 
+  async function handleCopyLink(item: FeedItem) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(item.contentUrl);
+      } else {
+        copyTextFallback(item.contentUrl);
+      }
+      setCopiedItemId(item.id);
+      window.setTimeout(() => {
+        setCopiedItemId((current) => (current === item.id ? "" : current));
+      }, 1800);
+    } catch {
+      try {
+        copyTextFallback(item.contentUrl);
+        setCopiedItemId(item.id);
+        window.setTimeout(() => {
+          setCopiedItemId((current) => (current === item.id ? "" : current));
+        }, 1800);
+      } catch {
+        setActionError("复制链接失败，请手动打开原文复制。");
+      }
+    }
+  }
+
+  async function handleGenerateSummary(item: FeedItem) {
+    setSummaryErrors((current) => ({ ...current, [item.id]: "" }));
+    setSummarizingItemIds((current) => new Set(current).add(item.id));
+
+    try {
+      const response = await fetchWithTimeout(
+        `/api/items/${item.id}/summary`,
+        {
+          method: "POST",
+        },
+        45000,
+      );
+      const json = (await response.json()) as SummaryResponse;
+
+      if (!response.ok || !json.summary) {
+        throw new Error(json.error || "摘要生成失败。");
+      }
+
+      const patch = { aiSummary: json.summary.summaryText };
+
+      stateOverridesRef.current[item.id] = {
+        ...stateOverridesRef.current[item.id],
+        ...patch,
+      };
+      patchItem(item.id, patch);
+    } catch (error) {
+      setSummaryErrors((current) => ({
+        ...current,
+        [item.id]: getRequestErrorMessage(error, "摘要生成失败。"),
+      }));
+    } finally {
+      setSummarizingItemIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }
+
   async function handleRefreshFeeds() {
-    const targetSubscriptions = selectedSourceId
+    const candidateSubscriptions = selectedSourceId
       ? subscriptions.filter((subscription) => subscription.id === selectedSourceId)
       : subscriptions;
+    const targetSubscriptions = candidateSubscriptions.filter(
+      (subscription) => subscription.status !== "inactive",
+    );
 
     if (targetSubscriptions.length === 0) {
+      if (candidateSubscriptions.length > 0) {
+        setActionError("该订阅源已停用，启用后才能刷新。");
+        setRefreshReport({
+          scope: candidateSubscriptions[0]?.title || "Selected source",
+          total: candidateSubscriptions.length,
+          success: 0,
+          failed: 0,
+          skipped: candidateSubscriptions.length,
+          results: candidateSubscriptions.map((subscription) => ({
+            subscriptionId: subscription.id,
+            title: subscription.title,
+            status: "failed",
+            fetchedCount: 0,
+            newCount: 0,
+            error: "订阅源已停用。",
+          })),
+        });
+      }
       return;
     }
 
     setIsRefreshing(true);
     setActionError("");
+    setRefreshReport(null);
 
     try {
-      const results = await Promise.allSettled(
+      const settledResults = await Promise.allSettled(
         targetSubscriptions.map(async (subscription) => {
           const response = await fetchWithTimeout(
             `/api/subscriptions/${subscription.id}/fetch`,
@@ -518,15 +848,50 @@ export default function Home() {
             },
             12000,
           );
+          const json = (await response.json()) as SubscriptionFetchResponse;
 
-          return response.ok;
+          if (json.result) {
+            return json.result;
+          }
+
+          return {
+            subscriptionId: subscription.id,
+            title: subscription.title,
+            status: response.ok ? "success" : "failed",
+            fetchedCount: 0,
+            newCount: 0,
+            error: json.error || "刷新失败。",
+          } satisfies RefreshResult;
         }),
       );
-      const failed = results.filter(
-        (result) => result.status === "rejected" || !result.value,
-      ).length;
+      const results = settledResults.map((result, index): RefreshResult => {
+        if (result.status === "fulfilled") {
+          return result.value;
+        }
+
+        const subscription = targetSubscriptions[index];
+        return {
+          subscriptionId: subscription.id,
+          title: subscription.title,
+          status: "failed",
+          fetchedCount: 0,
+          newCount: 0,
+          error: getRequestErrorMessage(result.reason, "刷新失败。"),
+        };
+      });
+      const failed = results.filter((result) => result.status === "failed").length;
+      const success = results.length - failed;
+      const report = {
+        scope: selectedSourceId ? targetSubscriptions[0]?.title || "Selected source" : "All feeds",
+        total: candidateSubscriptions.length,
+        success,
+        failed,
+        skipped: candidateSubscriptions.length - targetSubscriptions.length,
+        results,
+      };
 
       await loadData();
+      setRefreshReport(report);
 
       if (failed) {
         const failedSource = selectedSourceId
@@ -591,7 +956,7 @@ export default function Home() {
         },
         20000,
       );
-      const json = (await response.json()) as { error?: string };
+      const json = (await response.json()) as SubscriptionActionResponse;
 
       if (!response.ok) {
         throw new Error(json.error || "订阅失败。");
@@ -601,10 +966,73 @@ export default function Home() {
       setShowAddModal(false);
       setActiveView("all");
       setSelectedSourceId("");
+      setActionError(
+        json.alreadyExisted
+          ? "订阅源已存在，已更新并刷新内容。"
+          : "订阅源已添加并完成首次抓取。",
+      );
     } catch (error) {
       setPreviewError(getRequestErrorMessage(error, "订阅失败。"));
     } finally {
       setIsConfirming(false);
+    }
+  }
+
+  async function handleUpdateSubscription(
+    subscriptionId: string,
+    patch: Pick<Partial<ApiSubscription>, "title" | "status">,
+  ) {
+    setActionError("");
+
+    try {
+      const response = await fetchWithTimeout(
+        `/api/subscriptions/${subscriptionId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        },
+        10000,
+      );
+      const json = (await response.json()) as SubscriptionActionResponse;
+
+      if (!response.ok || !json.subscription) {
+        throw new Error(json.error || "更新订阅源失败。");
+      }
+
+      await loadData();
+      setActionError("订阅源设置已更新。");
+    } catch (error) {
+      setActionError(getRequestErrorMessage(error, "更新订阅源失败。"));
+    }
+  }
+
+  async function handleDeleteSubscription(subscriptionId: string) {
+    setActionError("");
+
+    try {
+      const response = await fetchWithTimeout(
+        `/api/subscriptions/${subscriptionId}`,
+        {
+          method: "DELETE",
+        },
+        10000,
+      );
+      const json = (await response.json()) as SubscriptionActionResponse;
+
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || "删除订阅源失败。");
+      }
+
+      delete stateOverridesRef.current[subscriptionId];
+      if (selectedSourceId === subscriptionId) {
+        setSelectedSourceId("");
+      }
+      setSelectedId("");
+      await loadData();
+      setActionError("订阅源已删除。");
+    } catch (error) {
+      setActionError(getRequestErrorMessage(error, "删除订阅源失败。"));
     }
   }
 
@@ -660,8 +1088,21 @@ export default function Home() {
         <GlobalNotice message={actionError} onDismiss={() => setActionError("")} />
       ) : null}
 
+      {refreshReport ? (
+        <RefreshResultPanel
+          report={refreshReport}
+          onDismiss={() => setRefreshReport(null)}
+        />
+      ) : null}
+
       {activeView === "settings" ? (
-        <SettingsView />
+        <SettingsView
+          aiConfig={aiConfig}
+          subscriptions={subscriptions}
+          onUpdateSubscription={handleUpdateSubscription}
+          onDeleteSubscription={handleDeleteSubscription}
+          onImportComplete={loadData}
+        />
       ) : loadError ? (
         <DataErrorState error={loadError} onRetry={() => void loadData()} />
       ) : isLoadingData && items.length === 0 ? (
@@ -696,10 +1137,16 @@ export default function Home() {
             <DetailPanel
               item={selectedItem}
               actionError={actionError}
+              aiConfig={aiConfig}
               isBusy={busyItemIds.has(selectedItem.id)}
+              isSummarizing={summarizingItemIds.has(selectedItem.id)}
+              isCopied={copiedItemId === selectedItem.id}
+              summaryError={summaryErrors[selectedItem.id] || ""}
               onToggleRead={() => void handleToggleRead(selectedItem)}
               onToggleFavorite={() => void handleToggleFavorite(selectedItem)}
               onOpenOriginal={() => handleOpenOriginal(selectedItem)}
+              onCopyLink={() => void handleCopyLink(selectedItem)}
+              onGenerateSummary={() => void handleGenerateSummary(selectedItem)}
             />
           ) : null}
         </>
@@ -741,6 +1188,78 @@ function GlobalNotice({
         <X size={16} />
       </button>
     </div>
+  );
+}
+
+function RefreshResultPanel({
+  report,
+  onDismiss,
+}: {
+  report: RefreshReport;
+  onDismiss: () => void;
+}) {
+  const totalNew = report.results.reduce((sum, result) => sum + result.newCount, 0);
+
+  return (
+    <aside className="fixed right-5 top-20 z-40 w-[420px] max-w-[calc(100vw-40px)] overflow-hidden rounded-md border border-[#cbd0d8] bg-white shadow-xl">
+      <header className="flex items-start justify-between gap-4 border-b border-[#d8dce3] bg-[#f7f8f9] px-5 py-4">
+        <div>
+          <h3 className="text-[17px] font-bold text-[#263241]">
+            Refresh Results
+          </h3>
+          <p className="mt-1 text-sm font-semibold text-[#69717d]">
+            {report.scope}: {totalNew} new, {report.failed} failed
+            {report.skipped ? `, ${report.skipped} skipped` : ""}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss refresh results"
+          className="text-[#606873] transition hover:text-[#1f2630]"
+        >
+          <X size={18} />
+        </button>
+      </header>
+
+      <div className="max-h-[360px] overflow-y-auto px-5 py-3">
+        {report.results.map((result) => (
+          <div
+            key={result.subscriptionId}
+            className="flex gap-3 border-b border-[#edf0f3] py-3 last:border-b-0"
+          >
+            <span
+              className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+                result.status === "success"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-red-50 text-red-700"
+              }`}
+            >
+              {result.status === "success" ? <Check size={15} /> : <X size={15} />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="truncate text-[15px] font-bold text-[#303843]">
+                  {result.title}
+                </p>
+                <span className="shrink-0 text-xs font-bold text-[#647080]">
+                  +{result.newCount}/{result.fetchedCount}
+                </span>
+              </div>
+              {result.error ? (
+                <p className="mt-2 text-sm font-semibold leading-5 text-red-700">
+                  {result.error}
+                </p>
+              ) : (
+                <p className="mt-2 text-sm font-semibold leading-5 text-[#647080]">
+                  {result.fetchedCount} items checked.
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }
 
@@ -968,7 +1487,9 @@ function SourceStatusDot({ status }: { status: SourceItem["status"] }) {
       ? "Source online"
       : status === "failed"
         ? "Source failed"
-        : "Source idle";
+        : status === "inactive"
+          ? "Source inactive"
+          : "Source idle";
 
   if (status === "failed") {
     return (
@@ -987,7 +1508,11 @@ function SourceStatusDot({ status }: { status: SourceItem["status"] }) {
       aria-label={label}
       title={label}
       className={`h-2 w-2 rounded-full ${
-        status === "online" ? "bg-[#17bf7d]" : "bg-[#b7bdc6]"
+        status === "online"
+          ? "bg-[#17bf7d]"
+          : status === "inactive"
+            ? "bg-[#7a828d]"
+            : "bg-[#b7bdc6]"
       }`}
     />
   );
@@ -1120,7 +1645,9 @@ function Timeline({
                 }
                 aria-label={item.thumbnail ? undefined : "Video without cover"}
               >
-                {!item.thumbnail ? <Video size={24} /> : null}
+                {!item.thumbnail ? (
+                  <PlatformPlaceholder item={item} compact />
+                ) : null}
                 {item.duration ? (
                   <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-bold text-white">
                     {item.duration}
@@ -1243,17 +1770,29 @@ function SearchEmptyState({
 function DetailPanel({
   item,
   actionError,
+  aiConfig,
   isBusy,
+  isSummarizing,
+  isCopied,
+  summaryError,
   onToggleRead,
   onToggleFavorite,
   onOpenOriginal,
+  onCopyLink,
+  onGenerateSummary,
 }: {
   item: FeedItem;
   actionError: string;
+  aiConfig: AiConfig;
   isBusy: boolean;
+  isSummarizing: boolean;
+  isCopied: boolean;
+  summaryError: string;
   onToggleRead: () => void;
   onToggleFavorite: () => void;
   onOpenOriginal: () => void;
+  onCopyLink: () => void;
+  onGenerateSummary: () => void;
 }) {
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-[#fbfafb]">
@@ -1271,6 +1810,14 @@ function DetailPanel({
           >
             <ExternalLink size={18} />
             Open Original
+          </button>
+          <button
+            type="button"
+            onClick={onCopyLink}
+            className="flex h-9 items-center gap-2 border border-[#c9ced6] bg-[#f6f4f5] px-4 text-[15px] font-semibold text-[#2f3540] transition hover:bg-white"
+          >
+            {isCopied ? <Check size={18} /> : <Copy size={18} />}
+            {isCopied ? "Copied" : "Copy Link"}
           </button>
           <button
             type="button"
@@ -1310,36 +1857,10 @@ function DetailPanel({
               onOpenOriginal={onOpenOriginal}
             />
           ) : (
-            <div className="mt-9 rounded-md border border-[#cfd4dc] bg-white p-7 text-[18px] leading-8 text-[#4b535d]">
-              {item.excerpt}
-            </div>
+            <ContentBlock item={item} />
           )}
 
-          {item.type === "Video" && item.embedUrl ? (
-            <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  const playButton = document.querySelector<HTMLButtonElement>(
-                    "[data-video-play-button='true']",
-                  );
-                  playButton?.click();
-                }}
-                className="inline-flex h-10 items-center gap-2 bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50]"
-              >
-                <Video size={16} fill="currentColor" />
-                Play Embedded
-              </button>
-              <button
-                type="button"
-                onClick={onOpenOriginal}
-                className="inline-flex h-10 items-center gap-2 border border-[#c9ced6] bg-white px-4 text-[14px] font-semibold text-[#2f3540] transition hover:bg-[#f6f4f5]"
-              >
-                <ExternalLink size={16} />
-                Open Video Page
-              </button>
-            </div>
-          ) : null}
+          {item.type === "Video" ? <ContentBlock item={item} /> : null}
 
           {actionError ? (
             <div className="mt-6 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
@@ -1348,15 +1869,49 @@ function DetailPanel({
           ) : null}
 
           <section className="mt-9 rounded-md border border-[#cfd4dc] bg-white p-7">
-            <div className="flex items-center gap-3">
-              <Sparkles size={25} className="text-[#34495f]" />
-              <h3 className="text-[24px] font-bold text-[#2f3b4a]">
-                AI Summary
-              </h3>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <Sparkles size={25} className="text-[#34495f]" />
+                <h3 className="text-[24px] font-bold text-[#2f3b4a]">
+                  AI Summary
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={onGenerateSummary}
+                disabled={isSummarizing || !aiConfig.configured}
+                className="inline-flex h-10 items-center gap-2 rounded-sm bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50] disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {isSummarizing ? (
+                  <RefreshCcw size={16} className="animate-spin" />
+                ) : (
+                  <Sparkles size={16} />
+                )}
+                {item.aiSummary
+                  ? isSummarizing
+                    ? "Regenerating"
+                    : "Regenerate"
+                  : isSummarizing
+                    ? "Generating"
+                    : "Generate Summary"}
+              </button>
             </div>
+
+            {!aiConfig.configured ? (
+              <div className="mt-5 rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+                OPENAI_API_KEY is not configured for the server.
+              </div>
+            ) : null}
+
+            {summaryError ? (
+              <div className="mt-5 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                {summaryError}
+              </div>
+            ) : null}
+
             <p className="mt-6 max-w-[780px] text-[18px] font-medium leading-8 text-[#5d636b]">
               {item.aiSummary ||
-                "AI summary has not been generated yet. Manual summarization will be available after the AI API key module is configured."}
+                "No AI summary yet. Generate it manually when this item is worth a closer read."}
             </p>
 
             {item.aiSummary ? (
@@ -1376,6 +1931,39 @@ function DetailPanel({
   );
 }
 
+function ContentBlock({ item }: { item: FeedItem }) {
+  const body = item.bodyText || item.excerpt;
+
+  return (
+    <section className="mt-7 rounded-md border border-[#cfd4dc] bg-white p-7">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <FileText size={22} className="text-[#34495f]" />
+          <h3 className="text-[20px] font-bold text-[#2f3b4a]">
+            Content Context
+          </h3>
+        </div>
+        <span className="rounded bg-[#eef0f3] px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em] text-[#59616b]">
+          {item.platform}
+        </span>
+      </div>
+      <p className="mt-5 whitespace-pre-wrap text-[17px] font-medium leading-8 text-[#4b535d]">
+        {body}
+      </p>
+      {body !== item.excerpt ? (
+        <div className="mt-6 border-t border-[#e1e4e8] pt-5">
+          <h4 className="text-sm font-bold uppercase tracking-[0.08em] text-[#69717d]">
+            Feed Summary
+          </h4>
+          <p className="mt-3 text-[15px] font-semibold leading-6 text-[#606873]">
+            {item.excerpt}
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function VideoPlayer({
   item,
   onOpenOriginal,
@@ -1384,57 +1972,299 @@ function VideoPlayer({
   onOpenOriginal: () => void;
 }) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playerStatus, setPlayerStatus] = useState<VideoPlayerStatus>("idle");
   const hasCover = Boolean(item.thumbnail);
+  const playableEmbedUrl = getPlayableEmbedUrl(item);
+  const playerId = `yt-player-${item.id}`;
 
-  if (isPlaying && item.embedUrl) {
+  useEffect(() => {
+    if (!isPlaying || !playableEmbedUrl.includes("youtube")) {
+      return;
+    }
+
+    function handleMessage(event: MessageEvent) {
+      if (!String(event.origin).includes("youtube")) {
+        return;
+      }
+
+      const data =
+        typeof event.data === "string"
+          ? parseYouTubePlayerMessage(event.data)
+          : event.data;
+
+      if (!data || (data.id && data.id !== playerId)) {
+        return;
+      }
+
+      if (data.event === "onReady") {
+        postYouTubeCommand(playerId, "playVideo");
+      }
+
+      if (data.event === "onStateChange" && data.info === 1) {
+        setPlayerStatus("playing");
+      }
+
+      if (data.event === "onError") {
+        setPlayerStatus("blocked");
+      }
+    }
+
+    window.addEventListener("message", handleMessage);
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [isPlaying, playableEmbedUrl, playerId]);
+
+  useEffect(() => {
+    if (!isPlaying || !playableEmbedUrl) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setPlayerStatus((current) =>
+        current === "loading" ? "playing" : current,
+      );
+    }, playableEmbedUrl.includes("youtube") ? 2500 : 1500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isPlaying, playableEmbedUrl]);
+
+  function startEmbeddedPlayback() {
+    setPlayerStatus("loading");
+    setIsPlaying(true);
+  }
+
+  function stopEmbeddedPlayback() {
+    setPlayerStatus("idle");
+    setIsPlaying(false);
+  }
+
+  function notifyYouTubePlayerReady(event: SyntheticEvent<HTMLIFrameElement>) {
+    const contentWindow = event.currentTarget.contentWindow;
+
+    if (!event.currentTarget.src.includes("youtube")) {
+      setPlayerStatus("playing");
+      return;
+    }
+
+    if (!contentWindow) {
+      return;
+    }
+
+    contentWindow.postMessage(
+      JSON.stringify({ event: "listening", id: playerId }),
+      "https://www.youtube.com",
+    );
+    postYouTubeCommand(playerId, "playVideo");
+  }
+
+  if (isPlaying && playableEmbedUrl) {
     return (
-      <div className="relative mt-9 aspect-video overflow-hidden rounded-md border border-[#cfd4dc] bg-[#111827]">
-        <iframe
-          src={item.embedUrl}
-          title={item.title}
-          className="h-full w-full"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
+      <>
+        <div className="relative mt-9 aspect-video overflow-hidden rounded-md border border-[#cfd4dc] bg-[#111827]">
+          <iframe
+            id={playerId}
+            src={getAutoplayEmbedUrl(playableEmbedUrl)}
+            title={item.title}
+            className="h-full w-full"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            referrerPolicy="no-referrer-when-downgrade"
+            onLoad={notifyYouTubePlayerReady}
+            allowFullScreen
+          />
+          <button
+            type="button"
+            onClick={stopEmbeddedPlayback}
+            className="absolute right-3 top-3 z-20 bg-white/95 px-3 py-2 text-xs font-bold text-[#263241] shadow"
+          >
+            Show Cover
+          </button>
+          {playerStatus === "blocked" ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#282828] px-5 pt-12 text-[#eeeeee] xl:px-8 xl:pt-14">
+              <div className="flex max-w-[760px] flex-col items-center gap-2 text-center xl:flex-row xl:gap-8 xl:text-left">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-[5px] border-[#c7c7c7] text-[32px] font-black leading-none text-[#c7c7c7] xl:h-24 xl:w-24 xl:border-[10px] xl:text-[64px]">
+                  !
+                </div>
+                <div>
+                  <p className="text-[18px] font-bold leading-tight xl:text-[28px]">
+                    视频无法播放
+                  </p>
+                  <p className="mt-1 text-[13px] font-medium leading-5 text-[#eeeeee] xl:mt-5 xl:text-[22px] xl:leading-9">
+                    视频所有者已禁止在其他网站上播放此视频
+                    <br />
+                    <button
+                      type="button"
+                      onClick={onOpenOriginal}
+                      className="underline underline-offset-4"
+                    >
+                      在 YouTube 上观看
+                    </button>
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <VideoActions
+          canEmbed={Boolean(playableEmbedUrl)}
+          status={playerStatus}
+          externalPlayLabel="Open Video"
+          onPlay={startEmbeddedPlayback}
+          onOpenOriginal={onOpenOriginal}
         />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="relative mt-9 aspect-video overflow-hidden rounded-md border border-[#cfd4dc] bg-[#d7d2cb]">
+        {hasCover ? (
+          <div
+            className="h-full w-full bg-cover bg-center"
+            style={{ backgroundImage: `url(${item.thumbnail})` }}
+            aria-hidden="true"
+          />
+        ) : (
+          <div className="relative h-full w-full bg-[#ece9e6] text-[#34495f]">
+            <PlatformPlaceholder item={item} cover />
+          </div>
+        )}
         <button
           type="button"
-          onClick={() => setIsPlaying(false)}
-          className="absolute right-3 top-3 bg-white/95 px-3 py-2 text-xs font-bold text-[#263241] shadow"
+          onClick={() => {
+            if (playableEmbedUrl) {
+              startEmbeddedPlayback();
+            } else {
+              onOpenOriginal();
+            }
+          }}
+          aria-label={playableEmbedUrl ? "Play embedded video" : "Open video"}
+          className="absolute left-1/2 top-1/2 flex h-[72px] w-[72px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl bg-white/95 text-[#34495f] shadow-lg transition hover:scale-105"
         >
-          Show Cover
+          <Video size={30} fill="currentColor" />
         </button>
+      </div>
+      <VideoActions
+        canEmbed={Boolean(playableEmbedUrl)}
+        status={playerStatus}
+        externalPlayLabel="Open Video"
+        onPlay={startEmbeddedPlayback}
+        onOpenOriginal={onOpenOriginal}
+      />
+      {!playableEmbedUrl ? (
+        <p className="mt-3 rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+          This video cannot be embedded from its feed link. Open the video page
+          to watch it.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function VideoActions({
+  canEmbed,
+  status,
+  externalPlayLabel,
+  onPlay,
+  onOpenOriginal,
+}: {
+  canEmbed: boolean;
+  status: VideoPlayerStatus;
+  externalPlayLabel: string;
+  onPlay: () => void;
+  onOpenOriginal: () => void;
+}) {
+  const embedLabel =
+    status === "loading"
+      ? "Loading"
+      : status === "playing"
+        ? "Playing"
+        : status === "blocked"
+          ? "Cannot Embed"
+          : "Play Embedded";
+
+  return (
+    <div className="mt-4 flex flex-wrap gap-3">
+      {canEmbed ? (
+        <button
+          type="button"
+          onClick={onPlay}
+          disabled={status === "loading" || status === "playing"}
+          className="inline-flex h-10 items-center gap-2 bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Video size={16} fill="currentColor" />
+          {embedLabel}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onOpenOriginal}
+          className="inline-flex h-10 items-center gap-2 bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50]"
+        >
+          <Video size={16} fill="currentColor" />
+          {externalPlayLabel}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onOpenOriginal}
+        className="inline-flex h-10 items-center gap-2 border border-[#c9ced6] bg-white px-4 text-[14px] font-semibold text-[#2f3540] transition hover:bg-[#f6f4f5]"
+      >
+        <ExternalLink size={16} />
+        Open Video Page
+      </button>
+    </div>
+  );
+}
+
+function PlatformPlaceholder({
+  item,
+  compact = false,
+  cover = false,
+}: {
+  item: FeedItem;
+  compact?: boolean;
+  cover?: boolean;
+}) {
+  if (compact) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-[#eef0f3] text-[18px] font-black text-[#34495f]">
+        {item.sourceInitial}
+      </div>
+    );
+  }
+
+  if (cover) {
+    return (
+      <div className="h-full w-full bg-[linear-gradient(135deg,#eef0f3,#d9dde4)]">
+        <div className="absolute left-6 top-6 rounded border border-[#c4cbd5] bg-white/75 px-3 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#647080] shadow-sm">
+          {item.platform}
+        </div>
+        <div className="absolute bottom-6 left-6 right-6">
+          <p className="truncate text-[24px] font-bold text-[#263241]">
+            {item.source}
+          </p>
+          <p className="mt-2 line-clamp-2 max-w-[540px] text-[16px] font-semibold leading-6 text-[#5e6874]">
+            {item.title}
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative mt-9 aspect-video overflow-hidden rounded-md border border-[#cfd4dc] bg-[#d7d2cb]">
-      {hasCover ? (
-        <div
-          className="h-full w-full bg-cover bg-center"
-          style={{ backgroundImage: `url(${item.thumbnail})` }}
-          aria-hidden="true"
-        />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center bg-[#ece9e6] text-[#34495f]">
-          <Video size={48} />
-        </div>
-      )}
-      <button
-        type="button"
-        data-video-play-button="true"
-        onClick={() => {
-          if (item.embedUrl) {
-            setIsPlaying(true);
-          } else {
-            onOpenOriginal();
-          }
-        }}
-        aria-label={item.embedUrl ? "Play embedded video" : "Open video"}
-        className="absolute left-1/2 top-1/2 flex h-[72px] w-[72px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl bg-white/95 text-[#34495f] shadow-lg transition hover:scale-105"
-      >
-        <Video size={30} fill="currentColor" />
-      </button>
+    <div className="flex h-full w-full flex-col items-center justify-center bg-[linear-gradient(135deg,#eef0f3,#d9dde4)] px-8 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-md border border-[#c4cbd5] bg-white/80 text-[#34495f] shadow-sm">
+        {item.type === "Video" ? <Video size={31} /> : <FileText size={31} />}
+      </div>
+      <p className="mt-5 text-sm font-bold uppercase tracking-[0.12em] text-[#647080]">
+        {item.platform}
+      </p>
+      <p className="mt-2 max-w-[420px] truncate text-[22px] font-bold text-[#263241]">
+        {item.source}
+      </p>
     </div>
   );
 }
@@ -1472,7 +2302,112 @@ function EmptyState({ onAddSubscription }: { onAddSubscription: () => void }) {
   );
 }
 
-function SettingsView() {
+function SettingsView({
+  aiConfig,
+  subscriptions,
+  onUpdateSubscription,
+  onDeleteSubscription,
+  onImportComplete,
+}: {
+  aiConfig: AiConfig;
+  subscriptions: ApiSubscription[];
+  onUpdateSubscription: (
+    subscriptionId: string,
+    patch: Pick<Partial<ApiSubscription>, "title" | "status">,
+  ) => void;
+  onDeleteSubscription: (subscriptionId: string) => void;
+  onImportComplete: () => Promise<void>;
+}) {
+  const [selectedSubscriptionId, setSelectedSubscriptionId] = useState(
+    subscriptions[0]?.id || "",
+  );
+  const [draftTitles, setDraftTitles] = useState<Record<string, string>>({});
+  const [isImportingOpml, setIsImportingOpml] = useState(false);
+  const [opmlMessage, setOpmlMessage] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const effectiveSelectedSubscriptionId = subscriptions.some(
+    (subscription) => subscription.id === selectedSubscriptionId,
+  )
+    ? selectedSubscriptionId
+    : subscriptions[0]?.id || "";
+  const selectedSubscription =
+    subscriptions.find(
+      (subscription) => subscription.id === effectiveSelectedSubscriptionId,
+    ) ||
+    subscriptions[0];
+  const draftTitle = selectedSubscription
+    ? (draftTitles[selectedSubscription.id] ?? selectedSubscription.title)
+    : "";
+
+  async function handleExportOpml() {
+    setOpmlMessage("");
+
+    try {
+      const response = await fetchWithTimeout(
+        "/api/subscriptions/opml",
+        {},
+        10000,
+      );
+
+      if (!response.ok) {
+        throw new Error("OPML 导出失败。");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "lxy-subscriptions.opml";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setOpmlMessage("OPML 已导出。");
+    } catch (error) {
+      setOpmlMessage(getRequestErrorMessage(error, "OPML 导出失败。"));
+    }
+  }
+
+  async function handleImportOpml(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    setIsImportingOpml(true);
+    setOpmlMessage("");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetchWithTimeout(
+        "/api/subscriptions/opml",
+        {
+          method: "POST",
+          body: formData,
+        },
+        15000,
+      );
+      const json = (await response.json()) as OpmlImportResult;
+
+      if (!response.ok) {
+        throw new Error(json.error || "OPML 导入失败。");
+      }
+
+      await onImportComplete();
+      setOpmlMessage(
+        `导入完成：新增 ${json.imported} 个，更新 ${json.updated} 个，失败 ${json.failed} 个。`,
+      );
+    } catch (error) {
+      setOpmlMessage(getRequestErrorMessage(error, "OPML 导入失败。"));
+    } finally {
+      setIsImportingOpml(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  }
+
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-[#fbfafb]">
       <header className="flex h-[72px] items-center justify-end border-b border-[#d4d8de] px-10">
@@ -1559,11 +2494,25 @@ function SettingsView() {
                 <div className="mt-8 space-y-6">
                   <Field
                     label="AI API Key"
-                    accessory={<span className="text-sm font-bold">Get Key</span>}
+                    accessory={
+                      <span
+                        className={`text-sm font-bold ${
+                          aiConfig.configured
+                            ? "text-[#147a55]"
+                            : "text-[#a15f13]"
+                        }`}
+                      >
+                        {aiConfig.configured ? "Configured" : "Missing"}
+                      </span>
+                    }
                   >
                     <div className="flex h-12 items-center border border-[#cbd0d8] bg-white px-4">
                       <input
-                        value="••••••••••••••••••••••"
+                        value={
+                          aiConfig.configured
+                            ? "••••••••••••••••••••••"
+                            : "OPENAI_API_KEY"
+                        }
                         readOnly
                         className="min-w-0 flex-1 text-[17px] font-medium text-[#2d333b] outline-none"
                       />
@@ -1575,13 +2524,242 @@ function SettingsView() {
                       type="button"
                       className="flex h-12 w-full items-center justify-between border border-[#cbd0d8] bg-white px-4 text-left text-[17px] font-medium text-[#2d333b]"
                     >
-                      Configure later
+                      {aiConfig.model}
                       <ChevronDown size={19} />
                     </button>
                   </Field>
                 </div>
               </section>
             </div>
+
+            <section className="mt-7 rounded-md border border-[#cbd0d8] bg-white p-7">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-center gap-3 text-[#2d3847]">
+                  <FileText size={21} />
+                  <h3 className="text-[24px] font-bold">OPML</h3>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleExportOpml()}
+                    className="flex h-11 items-center gap-2 border border-[#cbd0d8] bg-white px-4 text-[14px] font-semibold text-[#303843] transition hover:bg-[#f4f5f6]"
+                  >
+                    <Download size={16} />
+                    Export OPML
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isImportingOpml}
+                    className="flex h-11 items-center gap-2 bg-[#4b5b70] px-4 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Upload size={16} />
+                    {isImportingOpml ? "Importing" : "Import OPML"}
+                  </button>
+                </div>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".opml,.xml,text/xml,text/x-opml"
+                className="hidden"
+                onChange={(event) =>
+                  void handleImportOpml(event.currentTarget.files?.[0] || null)
+                }
+              />
+              {opmlMessage ? (
+                <p className="mt-5 border border-[#d7dbe2] bg-[#fbfafb] px-4 py-3 text-[14px] font-semibold text-[#4b5563]">
+                  {opmlMessage}
+                </p>
+              ) : null}
+            </section>
+
+            <section className="mt-7 rounded-md border border-[#cbd0d8] bg-white p-7">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3 text-[#2d3847]">
+                  <Rss size={21} />
+                  <h3 className="text-[24px] font-bold">Sources</h3>
+                </div>
+                <span className="text-sm font-bold text-[#647080]">
+                  {subscriptions.length} sources
+                </span>
+              </div>
+
+              {selectedSubscription ? (
+                <div className="mt-8 grid grid-cols-[300px_1fr] gap-7 max-lg:grid-cols-1">
+                  <div className="max-h-[420px] overflow-y-auto border border-[#d7dbe2]">
+                    {subscriptions.map((subscription) => {
+                      const isSelected = subscription.id === selectedSubscription.id;
+                      const isInactive = subscription.status === "inactive";
+
+                      return (
+                        <button
+                          type="button"
+                          key={subscription.id}
+                          onClick={() => setSelectedSubscriptionId(subscription.id)}
+                          className={`flex w-full items-start gap-3 border-b border-[#e0e3e8] px-4 py-4 text-left transition last:border-b-0 ${
+                            isSelected ? "bg-[#f3f5f7]" : "bg-white hover:bg-[#f8f9fa]"
+                          }`}
+                        >
+                          <span
+                            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${getSourceColor(
+                              subscription.sourceType,
+                            )}`}
+                          >
+                            {subscription.title.slice(0, 1).toUpperCase()}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[15px] font-bold text-[#2d333b]">
+                              {subscription.title}
+                            </span>
+                            <span className="mt-1 block text-xs font-bold uppercase tracking-[0.08em] text-[#69717d]">
+                              {isInactive ? "Inactive" : subscription.status}
+                            </span>
+                          </span>
+                          <SourceStatusDot
+                            status={
+                              isInactive
+                                ? "inactive"
+                                : subscription.status === "failed"
+                                  ? "failed"
+                                  : subscription.status === "active"
+                                    ? "online"
+                                    : "idle"
+                            }
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="min-w-0 border border-[#d7dbe2] bg-[#fbfafb] p-6">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <h4 className="truncate text-[22px] font-bold text-[#263241]">
+                          {selectedSubscription.title}
+                        </h4>
+                        <p className="mt-2 text-sm font-bold uppercase tracking-[0.08em] text-[#69717d]">
+                          {selectedSubscription.sourceType}
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded px-3 py-2 text-sm font-bold ${
+                          selectedSubscription.status === "inactive"
+                            ? "bg-slate-100 text-slate-600"
+                            : selectedSubscription.status === "failed"
+                              ? "bg-red-50 text-red-700"
+                              : "bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        {selectedSubscription.status === "inactive"
+                          ? "Inactive"
+                          : selectedSubscription.status === "failed"
+                            ? "Failed"
+                            : "Active"}
+                      </span>
+                    </div>
+
+                    <div className="mt-7 grid grid-cols-2 gap-5 max-lg:grid-cols-1">
+                      <Field label="Display Name">
+                        <div className="flex gap-3">
+                          <input
+                            value={draftTitle}
+                            onChange={(event) =>
+                              setDraftTitles((current) => ({
+                                ...current,
+                                [selectedSubscription.id]: event.target.value,
+                              }))
+                            }
+                            className="h-12 min-w-0 flex-1 border border-[#cbd0d8] bg-white px-4 text-[16px] font-medium text-[#2d333b] outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateSubscription(selectedSubscription.id, {
+                                title: draftTitle,
+                              })
+                            }
+                            disabled={draftTitle.trim() === selectedSubscription.title}
+                            className="flex h-12 items-center gap-2 bg-[#4b5b70] px-4 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Pencil size={16} />
+                            Rename
+                          </button>
+                        </div>
+                      </Field>
+
+                      <Field label="Last Fetch">
+                        <div className="flex h-12 items-center border border-[#cbd0d8] bg-white px-4 text-[16px] font-medium text-[#2d333b]">
+                          {formatDateTime(selectedSubscription.lastFetchedAt)}
+                        </div>
+                      </Field>
+                    </div>
+
+                    <div className="mt-6 grid grid-cols-2 gap-5 max-lg:grid-cols-1">
+                      <DetailValue
+                        label="Original URL"
+                        value={selectedSubscription.inputUrl}
+                      />
+                      <DetailValue label="Feed URL" value={selectedSubscription.feedUrl} />
+                      <DetailValue
+                        label="Site URL"
+                        value={selectedSubscription.siteUrl || "Not available"}
+                      />
+                      <DetailValue
+                        label="Items"
+                        value={`${selectedSubscription._count?.items ?? 0}`}
+                      />
+                    </div>
+
+                    {selectedSubscription.lastError ? (
+                      <div className="mt-6 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                        {selectedSubscription.lastError}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-7 flex flex-wrap justify-end gap-3 border-t border-[#d4d8de] pt-5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateSubscription(selectedSubscription.id, {
+                            status:
+                              selectedSubscription.status === "inactive"
+                                ? "active"
+                                : "inactive",
+                          })
+                        }
+                        className="flex h-10 items-center gap-2 border border-[#cbd0d8] bg-white px-4 text-[14px] font-semibold text-[#303843] transition hover:bg-[#f4f5f6]"
+                      >
+                        <Power size={16} />
+                        {selectedSubscription.status === "inactive"
+                          ? "Enable"
+                          : "Disable"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete source "${selectedSubscription.title}"?`,
+                            )
+                          ) {
+                            onDeleteSubscription(selectedSubscription.id);
+                          }
+                        }}
+                        className="flex h-10 items-center gap-2 border border-red-200 bg-red-50 px-4 text-[14px] font-semibold text-red-700 transition hover:bg-red-100"
+                      >
+                        <Trash2 size={16} />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-8 border border-dashed border-[#cbd0d8] bg-[#fbfafb] px-6 py-10 text-center text-[16px] font-semibold text-[#646b75]">
+                  No sources yet.
+                </div>
+              )}
+            </section>
 
             <div className="mt-12 flex justify-end border-t border-[#cbd0d8] pt-7">
               <button
@@ -1616,6 +2794,19 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+function DetailValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-[#69717d]">
+        {label}
+      </p>
+      <p className="mt-2 break-words border border-[#d7dbe2] bg-white px-4 py-3 text-[14px] font-semibold leading-6 text-[#303843]">
+        {value}
+      </p>
+    </div>
   );
 }
 

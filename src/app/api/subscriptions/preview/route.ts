@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { previewFeed } from "@/lib/feed";
+import { getFriendlyErrorMessage } from "@/lib/repository";
 
 export async function POST(request: Request) {
   try {
@@ -15,8 +16,7 @@ export async function POST(request: Request) {
     const preview = await previewFeed(body.inputUrl);
     return NextResponse.json({ preview });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "无法预览该订阅源。";
+    const message = getFriendlyErrorMessage(error);
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

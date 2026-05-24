@@ -295,10 +295,24 @@ function getYouTubeVideoId(url: string) {
     const parsed = new URL(url);
 
     if (parsed.hostname.includes("youtu.be")) {
-      return parsed.pathname.replace("/", "");
+      return parsed.pathname.split("/").filter(Boolean)[0] || null;
     }
 
-    return parsed.searchParams.get("v");
+    const watchId = parsed.searchParams.get("v");
+
+    if (watchId) {
+      return watchId;
+    }
+
+    const [firstSegment, secondSegment] = parsed.pathname
+      .split("/")
+      .filter(Boolean);
+
+    if (["embed", "shorts", "live"].includes(firstSegment)) {
+      return secondSegment || null;
+    }
+
+    return null;
   } catch {
     return null;
   }

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { createSubscription, listSubscriptions } from "@/lib/repository";
+import {
+  createSubscription,
+  getFriendlyErrorMessage,
+  listSubscriptions,
+} from "@/lib/repository";
 
 export async function GET() {
   const subscriptions = await listSubscriptions();
@@ -17,10 +21,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const subscription = await createSubscription(body.inputUrl);
-    return NextResponse.json({ subscription });
+    const result = await createSubscription(body.inputUrl);
+    return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "订阅失败。";
+    const message = getFriendlyErrorMessage(error);
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
