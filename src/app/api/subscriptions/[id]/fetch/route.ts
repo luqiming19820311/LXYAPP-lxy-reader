@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { fetchSubscription } from "@/lib/repository";
 
+type SubscriptionRouteContext = {
+  params: Promise<{ id: string }>;
+};
+
 export async function POST(
   _request: Request,
-  context: RouteContext<"/api/subscriptions/[id]/fetch">,
+  context: SubscriptionRouteContext,
 ) {
   try {
     const { id } = await context.params;

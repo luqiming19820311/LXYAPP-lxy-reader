@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import type { ReactNode, SyntheticEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getPreviewEmptyMessage } from "@/lib/preview-display";
 
 type View = "all" | "videos" | "articles" | "favorites" | "settings";
 type ItemType = "Video" | "Article" | "Update";
@@ -116,6 +117,7 @@ type PreviewResult = {
   title: string;
   platform: string;
   feedUrl: string;
+  warning?: string;
   items: Array<{
     title: string;
     link: string;
@@ -126,6 +128,12 @@ type PreviewResult = {
 type AiConfig = {
   configured: boolean;
   model: string;
+};
+
+type FeedSettings = {
+  rsshubBaseUrl: string;
+  rsshubAccessCodeConfigured: boolean;
+  bilibiliCookieConfigured: boolean;
 };
 
 type ItemStateResponse = {
@@ -149,6 +157,7 @@ type SummaryResponse = {
 type SubscriptionActionResponse = {
   subscription?: ApiSubscription;
   alreadyExisted?: boolean;
+  initialFetchFailed?: boolean;
   ok?: boolean;
   error?: string;
 };
@@ -539,6 +548,11 @@ export default function Home() {
     configured: false,
     model: "gpt-5",
   });
+  const [feedSettings, setFeedSettings] = useState<FeedSettings>({
+    rsshubBaseUrl: "https://rsshub.app",
+    rsshubAccessCodeConfigured: false,
+    bilibiliCookieConfigured: false,
+  });
   const [subscriptionInput, setSubscriptionInput] = useState(
     "rsshub://youtube/user/%40xiao_lin_shuo",
   );
@@ -546,11 +560,17 @@ export default function Home() {
 
   async function loadData() {
     try {
-      const [itemsResponse, subscriptionsResponse, aiConfigResponse] =
+      const [
+        itemsResponse,
+        subscriptionsResponse,
+        aiConfigResponse,
+        feedSettingsResponse,
+      ] =
         await Promise.all([
           fetchWithTimeout("/api/items", {}, 10000),
           fetchWithTimeout("/api/subscriptions", {}, 10000),
           fetchWithTimeout("/api/ai/config", {}, 10000),
+          fetchWithTimeout("/api/settings/feed", {}, 10000),
         ]);
 
       if (!itemsResponse.ok || !subscriptionsResponse.ok) {
@@ -564,6 +584,9 @@ export default function Home() {
       const nextAiConfig = aiConfigResponse.ok
         ? ((await aiConfigResponse.json()) as AiConfig)
         : null;
+      const nextFeedSettings = feedSettingsResponse.ok
+        ? ((await feedSettingsResponse.json()) as { settings: FeedSettings }).settings
+        : null;
       const nextItems = itemsJson.items.map((item) => ({
         ...toFeedItem(item),
         ...stateOverridesRef.current[item.id],
@@ -573,6 +596,9 @@ export default function Home() {
       setSubscriptions(subscriptionsJson.subscriptions);
       if (nextAiConfig) {
         setAiConfig(nextAiConfig);
+      }
+      if (nextFeedSettings) {
+        setFeedSettings(nextFeedSettings);
       }
       setLoadError("");
       setSelectedId((current) =>
@@ -967,7 +993,9 @@ export default function Home() {
       setActiveView("all");
       setSelectedSourceId("");
       setActionError(
-        json.alreadyExisted
+        json.initialFetchFailed
+          ? "订阅源已添加，但首次抓取失败。可稍后在来源列表里单独刷新。"
+          : json.alreadyExisted
           ? "订阅源已存在，已更新并刷新内容。"
           : "订阅源已添加并完成首次抓取。",
       );
@@ -1098,7 +1126,9 @@ export default function Home() {
       {activeView === "settings" ? (
         <SettingsView
           aiConfig={aiConfig}
+          feedSettings={feedSettings}
           subscriptions={subscriptions}
+          onFeedSettingsChange={setFeedSettings}
           onUpdateSubscription={handleUpdateSubscription}
           onDeleteSubscription={handleDeleteSubscription}
           onImportComplete={loadData}
@@ -1162,6 +1192,10 @@ export default function Home() {
           onInputChange={setSubscriptionInput}
           onPreview={handlePreview}
           onClose={() => setShowAddModal(false)}
+          onConfigureAccess={() => {
+            setShowAddModal(false);
+            setActiveView("settings");
+          }}
           onConfirm={handleConfirmSubscription}
         />
       ) : null}
@@ -2304,13 +2338,17 @@ function EmptyState({ onAddSubscription }: { onAddSubscription: () => void }) {
 
 function SettingsView({
   aiConfig,
+  feedSettings,
   subscriptions,
+  onFeedSettingsChange,
   onUpdateSubscription,
   onDeleteSubscription,
   onImportComplete,
 }: {
   aiConfig: AiConfig;
+  feedSettings: FeedSettings;
   subscriptions: ApiSubscription[];
+  onFeedSettingsChange: (settings: FeedSettings) => void;
   onUpdateSubscription: (
     subscriptionId: string,
     patch: Pick<Partial<ApiSubscription>, "title" | "status">,
@@ -2323,6 +2361,10 @@ function SettingsView({
   );
   const [draftTitles, setDraftTitles] = useState<Record<string, string>>({});
   const [isImportingOpml, setIsImportingOpml] = useState(false);
+  const [rsshubDraft, setRsshubDraft] = useState(feedSettings.rsshubBaseUrl);
+  const [bilibiliCookieDraft, setBilibiliCookieDraft] = useState("");
+  const [isSavingFeedSettings, setIsSavingFeedSettings] = useState(false);
+  const [feedSettingsMessage, setFeedSettingsMessage] = useState("");
   const [opmlMessage, setOpmlMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const effectiveSelectedSubscriptionId = subscriptions.some(
@@ -2338,6 +2380,43 @@ function SettingsView({
   const draftTitle = selectedSubscription
     ? (draftTitles[selectedSubscription.id] ?? selectedSubscription.title)
     : "";
+
+  async function handleSaveFeedSettings(clearBilibiliCookie = false) {
+    setIsSavingFeedSettings(true);
+    setFeedSettingsMessage("");
+
+    try {
+      const response = await fetchWithTimeout(
+        "/api/settings/feed",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rsshubBaseUrl: rsshubDraft,
+            bilibiliCookie: bilibiliCookieDraft || undefined,
+            clearBilibiliCookie,
+          }),
+        },
+        10000,
+      );
+      const json = (await response.json()) as {
+        settings?: FeedSettings;
+        error?: string;
+      };
+
+      if (!response.ok || !json.settings) {
+        throw new Error(json.error || "保存抓取设置失败。");
+      }
+
+      onFeedSettingsChange(json.settings);
+      setBilibiliCookieDraft("");
+      setFeedSettingsMessage("抓取设置已保存。刷新 Bilibili 来源后生效。");
+    } catch (error) {
+      setFeedSettingsMessage(getRequestErrorMessage(error, "保存抓取设置失败。"));
+    } finally {
+      setIsSavingFeedSettings(false);
+    }
+  }
 
   async function handleExportOpml() {
     setOpmlMessage("");
@@ -2467,12 +2546,76 @@ function SettingsView({
                   <h3 className="text-[24px] font-bold">Network</h3>
                 </div>
                 <div className="mt-8 space-y-6">
-                  <Field label="RSSHub Base URL">
-                    <input
-                      value="https://rsshub.app"
-                      readOnly
-                      className="h-12 w-full border border-[#cbd0d8] bg-white px-4 text-[17px] font-medium text-[#2d333b] outline-none"
+	                  <Field label="RSSHub Base URL">
+	                    <input
+	                      value={rsshubDraft}
+	                      onChange={(event) => setRsshubDraft(event.target.value)}
+	                      placeholder="https://your-rsshub.example.com 或带 ?format=json&code=..."
+	                      className="h-12 w-full border border-[#cbd0d8] bg-white px-4 text-[17px] font-medium text-[#2d333b] outline-none"
+	                    />
+	                    <p className="mt-3 text-sm font-bold leading-6 text-[#647080]">
+	                      私有 RSSHub 可直接填带 query 的地址，例如包含 format=json 和 code。
+	                    </p>
+	                  </Field>
+                  <Field
+                    label="Bilibili Cookie"
+                    accessory={
+                      <span
+                        className={`text-sm font-bold ${
+                          feedSettings.bilibiliCookieConfigured
+                            ? "text-[#147a55]"
+                            : "text-[#a15f13]"
+                        }`}
+                      >
+                        {feedSettings.bilibiliCookieConfigured
+                          ? "Configured"
+                          : "Missing"}
+                      </span>
+                    }
+                  >
+                    <textarea
+                      value={bilibiliCookieDraft}
+                      onChange={(event) =>
+                        setBilibiliCookieDraft(event.target.value)
+                      }
+                      placeholder={
+                        feedSettings.bilibiliCookieConfigured
+                          ? "已保存 Cookie。粘贴新 Cookie 可替换。"
+                          : "粘贴 Bilibili 登录后的 Cookie"
+                      }
+                      rows={4}
+                      className="w-full resize-none border border-[#cbd0d8] bg-white px-4 py-3 text-[14px] font-medium leading-6 text-[#2d333b] outline-none"
                     />
+                    <p className="mt-3 text-sm font-bold leading-6 text-[#647080]">
+                      Cookie 只保存在本机 .lxy-settings.json，用于绕过匿名接口风控。
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveFeedSettings(false)}
+                        disabled={isSavingFeedSettings}
+                        className="flex h-10 items-center gap-2 bg-[#4b5b70] px-4 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Save size={16} />
+                        {isSavingFeedSettings ? "Saving" : "Save Feed Settings"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveFeedSettings(true)}
+                        disabled={
+                          isSavingFeedSettings ||
+                          !feedSettings.bilibiliCookieConfigured
+                        }
+                        className="h-10 border border-[#cbd0d8] bg-white px-4 text-[14px] font-semibold text-[#303843] transition hover:bg-[#f4f5f6] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Clear Cookie
+                      </button>
+                    </div>
+                    {feedSettingsMessage ? (
+                      <p className="mt-3 text-sm font-bold text-[#4f5660]">
+                        {feedSettingsMessage}
+                      </p>
+                    ) : null}
                   </Field>
                   <Field label="Background Refresh Interval">
                     <button
@@ -2839,6 +2982,7 @@ function AddSubscriptionModal({
   onInputChange,
   onPreview,
   onClose,
+  onConfigureAccess,
   onConfirm,
 }: {
   input: string;
@@ -2849,8 +2993,18 @@ function AddSubscriptionModal({
   onInputChange: (value: string) => void;
   onPreview: () => void;
   onClose: () => void;
+  onConfigureAccess: () => void;
   onConfirm: () => void;
 }) {
+  const needsAccessSetup = Boolean(preview?.warning);
+  const previewEmptyMessage = preview
+    ? getPreviewEmptyMessage({
+        platform: preview.platform,
+        warning: preview.warning,
+        itemsLength: preview.items.length,
+      })
+    : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1f2937]/18 backdrop-blur-[3px]">
       <section className="w-[540px] overflow-hidden rounded-lg border border-[#cbd0d8] bg-[#fbfafb] shadow-2xl">
@@ -2924,23 +3078,47 @@ function AddSubscriptionModal({
                   </p>
                 </div>
                 <span className="flex items-center gap-2 rounded bg-[#e9e9e9] px-3 py-2 text-sm font-bold text-[#3f454d]">
-                  <span className="h-2.5 w-2.5 rounded-full bg-[#19bf7d]" />
-                  Ready
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full ${
+                      preview.warning ? "bg-[#d97706]" : "bg-[#19bf7d]"
+                    }`}
+                  />
+                  {preview.warning ? "Needs Setup" : "Ready"}
                 </span>
               </div>
+
+              {preview.warning ? (
+                <div className="border-t border-amber-200 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-800">
+                  {preview.warning}
+                  <button
+                    type="button"
+                    onClick={onConfigureAccess}
+                    className="mt-3 flex h-9 items-center gap-2 rounded bg-[#4b5b70] px-3 text-[13px] font-bold text-white transition hover:bg-[#3f4d60]"
+                  >
+                    <Settings size={15} />
+                    Configure Bilibili Access
+                  </button>
+                </div>
+              ) : null}
 
               <div className="border-t border-[#cbd0d8] p-5">
                 <h4 className="text-xs font-bold uppercase tracking-[0.08em] text-[#4f5660]">
                   Latest Content
                 </h4>
-                <ul className="mt-4 space-y-4 text-[16px] font-medium text-[#2b3038]">
-                  {preview.items.map((item) => (
-                    <li key={item.link || item.title} className="flex items-center gap-4">
-                      <CirclePlay size={18} className="text-[#34495f]" />
-                      {item.title}
-                    </li>
-                  ))}
-                </ul>
+                {preview.items.length ? (
+                  <ul className="mt-4 space-y-4 text-[16px] font-medium text-[#2b3038]">
+                    {preview.items.map((item) => (
+                      <li key={item.link || item.title} className="flex items-center gap-4">
+                        <CirclePlay size={18} className="text-[#34495f]" />
+                        {item.title}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-4 text-[15px] font-semibold text-[#4f5660]">
+                    {previewEmptyMessage}
+                  </p>
+                )}
               </div>
             </div>
           ) : null}
@@ -2957,10 +3135,14 @@ function AddSubscriptionModal({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={isConfirming}
+            disabled={isConfirming || needsAccessSetup}
             className="h-10 rounded bg-[#4b5b70] px-7 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isConfirming ? "Subscribing..." : "Confirm Subscription"}
+            {isConfirming
+              ? "Subscribing..."
+              : needsAccessSetup
+                ? "Configure Access First"
+                : "Confirm Subscription"}
           </button>
         </footer>
       </section>

@@ -1,6 +1,12 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "./prisma";
-import { fetchNormalizedItems, previewFeed } from "./feed";
+import { prisma } from "./prisma.ts";
+import {
+  BILIBILI_RISK_CONTROL_MESSAGE,
+  fetchNormalizedItems,
+  isBilibiliRiskControlError,
+  previewFeed,
+  resolveFeedInput,
+} from "./feed.ts";
 
 type OpmlImportInput = {
   title: string;
@@ -8,11 +14,24 @@ type OpmlImportInput = {
   siteUrl?: string | null;
 };
 
+type FetchResultSummary = {
+  status: "success" | "failed";
+  fetchedCount?: number;
+  newCount?: number;
+  error?: string;
+};
+
 export function getFriendlyErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : `${error}`;
 
   if (message.includes("Status code 403")) {
     return "RSSHub 返回 403，公共实例可能被 Cloudflare 或目标站点拦截。";
+  }
+
+  if (
+    isBilibiliRiskControlError(error)
+  ) {
+    return BILIBILI_RISK_CONTROL_MESSAGE;
   }
 
   if (message.includes("Status code 404")) {
@@ -83,7 +102,38 @@ export async function getItem(id: string) {
 }
 
 export async function createSubscription(inputUrl: string) {
-  const preview = await previewFeed(inputUrl);
+  const preview = await previewFeed(inputUrl).catch(async (error) => {
+    const message = getFriendlyErrorMessage(error);
+    const resolved = await resolveFeedInput(inputUrl);
+
+    if (
+      resolved.platform !== "bilibili" ||
+      !message.includes("Bilibili 返回风控拦截")
+    ) {
+      throw error;
+    }
+
+    const mid = resolved.feedUrl.split("/").filter(Boolean).pop() || "unknown";
+
+    return {
+      title: `Bilibili UP ${mid}`,
+      platform: resolved.platform,
+      sourceType: "bilibili",
+      inputUrl: resolved.inputUrl,
+      feedUrl: resolved.feedUrl,
+      siteUrl: resolved.siteUrl,
+      domainKey: resolved.domainKey,
+      rsshubRoute: resolved.rsshubRoute,
+      items: [],
+      warning: message,
+    };
+  });
+  const initialError = preview.warning ?? null;
+
+  if (initialError) {
+    throw new Error(initialError);
+  }
+
   const existingSubscription = await prisma.subscription.findUnique({
     where: { feedUrl: preview.feedUrl },
   });
@@ -92,8 +142,8 @@ export async function createSubscription(inputUrl: string) {
     where: { feedUrl: preview.feedUrl },
     update: {
       title: preview.title,
-      status: "active",
-      lastError: null,
+      status: initialError ? "failed" : "active",
+      lastError: initialError,
       siteUrl: preview.siteUrl,
     },
     create: {
@@ -104,11 +154,29 @@ export async function createSubscription(inputUrl: string) {
       siteUrl: preview.siteUrl,
       domainKey: preview.domainKey,
       rsshubRoute: preview.rsshubRoute,
-      status: "active",
+      status: initialError ? "failed" : "active",
+      lastError: initialError,
     },
   });
 
-  await fetchSubscription(subscription.id);
+  let initialFetchResult: FetchResultSummary | null = initialError
+    ? { status: "failed" }
+    : null;
+
+  if (!initialError) {
+    try {
+      const fetchResult = await fetchSubscription(subscription.id);
+      initialFetchResult = fetchResult.result;
+    } catch (error) {
+      const cause = error instanceof Error ? error.cause : null;
+
+      if (cause && typeof cause === "object" && "result" in cause) {
+        initialFetchResult = cause.result as FetchResultSummary;
+      } else {
+        throw error;
+      }
+    }
+  }
 
   const refreshedSubscription = await prisma.subscription.findUnique({
     where: { id: subscription.id },
@@ -118,6 +186,8 @@ export async function createSubscription(inputUrl: string) {
   return {
     subscription: refreshedSubscription,
     alreadyExisted: Boolean(existingSubscription),
+    initialFetchFailed: initialFetchResult?.status === "failed",
+    initialFetchResult,
   };
 }
 
