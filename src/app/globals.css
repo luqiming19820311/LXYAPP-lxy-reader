@@ -5,6 +5,12 @@
   --foreground: #1f2630;
 }
 
+:root[data-theme="dark"] {
+  --background: #11151c;
+  --foreground: #edf1f5;
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -26,6 +32,103 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+:root[data-theme="dark"] body {
+  background: #11151c;
+}
+
+:root[data-theme="dark"] .bg-\[\#fbfafb\],
+:root[data-theme="dark"] .bg-\[\#f7f5f6\],
+:root[data-theme="dark"] .bg-\[\#f7f8f9\],
+:root[data-theme="dark"] .bg-white {
+  background-color: #161b23 !important;
+}
+
+:root[data-theme="dark"] .bg-\[\#f8f9fa\],
+:root[data-theme="dark"] .bg-\[\#f3f5f7\],
+:root[data-theme="dark"] .bg-\[\#f3f1f3\],
+:root[data-theme="dark"] .bg-\[\#eef0f3\],
+:root[data-theme="dark"] .bg-\[\#efedf0\],
+:root[data-theme="dark"] .bg-\[\#eceaed\],
+:root[data-theme="dark"] .bg-\[\#f4f5f6\],
+:root[data-theme="dark"] .bg-\[\#e1e0e2\],
+:root[data-theme="dark"] .bg-\[\#e3e2e4\] {
+  background-color: #202733 !important;
+}
+
+:root[data-theme="dark"] .border-\[\#cbd0d8\],
+:root[data-theme="dark"] .border-\[\#d4d8de\],
+:root[data-theme="dark"] .border-\[\#d7dbe2\] {
+  border-color: #3b4553 !important;
+}
+
+:root[data-theme="dark"] .text-\[\#2a3543\],
+:root[data-theme="dark"] .text-\[\#1d232c\],
+:root[data-theme="dark"] .text-\[\#202934\],
+:root[data-theme="dark"] .text-\[\#222831\],
+:root[data-theme="dark"] .text-\[\#242b34\],
+:root[data-theme="dark"] .text-\[\#263241\],
+:root[data-theme="dark"] .text-\[\#2b3038\],
+:root[data-theme="dark"] .text-\[\#2d333b\],
+:root[data-theme="dark"] .text-\[\#2d3847\],
+:root[data-theme="dark"] .text-\[\#2f3540\],
+:root[data-theme="dark"] .text-\[\#2f3b4a\],
+:root[data-theme="dark"] .text-\[\#303843\],
+:root[data-theme="dark"] .text-\[\#334154\],
+:root[data-theme="dark"] .text-\[\#344052\],
+:root[data-theme="dark"] .text-\[\#3b4552\],
+:root[data-theme="dark"] .text-\[\#3f454d\],
+:root[data-theme="dark"] .text-\[\#45505c\],
+:root[data-theme="dark"] .text-\[\#4b535d\],
+:root[data-theme="dark"] .text-\[\#4d535b\],
+:root[data-theme="dark"] .text-\[\#4d5662\],
+:root[data-theme="dark"] .text-\[\#4d535c\],
+:root[data-theme="dark"] .text-\[\#4e545d\],
+:root[data-theme="dark"] .text-\[\#4f5660\],
+:root[data-theme="dark"] .text-\[\#525960\],
+:root[data-theme="dark"] .text-\[\#555a62\],
+:root[data-theme="dark"] .text-\[\#555b64\],
+:root[data-theme="dark"] .text-\[\#565d66\],
+:root[data-theme="dark"] .text-\[\#575e68\],
+:root[data-theme="dark"] .text-\[\#585f69\],
+:root[data-theme="dark"] .text-\[\#59616b\],
+:root[data-theme="dark"] .text-\[\#5c6168\],
+:root[data-theme="dark"] .text-\[\#5d636b\],
+:root[data-theme="dark"] .text-\[\#5e6874\],
+:root[data-theme="dark"] .text-\[\#606771\],
+:root[data-theme="dark"] .text-\[\#606873\],
+:root[data-theme="dark"] .text-\[\#616974\],
+:root[data-theme="dark"] .text-\[\#626973\],
+:root[data-theme="dark"] .text-\[\#647080\],
+:root[data-theme="dark"] .text-\[\#646b75\],
+:root[data-theme="dark"] .text-\[\#69717d\],
+:root[data-theme="dark"] .text-\[\#6a6870\],
+:root[data-theme="dark"] .text-\[\#6a7078\],
+:root[data-theme="dark"] .text-\[\#747b84\] {
+  color: #d8dee8 !important;
+}
+
+:root[data-theme="dark"] .text-\[\#555a62\],
+:root[data-theme="dark"] .text-\[\#5d636b\],
+:root[data-theme="dark"] .text-\[\#606771\],
+:root[data-theme="dark"] .text-\[\#606873\],
+:root[data-theme="dark"] .text-\[\#647080\],
+:root[data-theme="dark"] .text-\[\#69717d\],
+:root[data-theme="dark"] .text-\[\#6a6870\],
+:root[data-theme="dark"] .text-\[\#6a7078\],
+:root[data-theme="dark"] .text-\[\#747b84\] {
+  color: #aeb8c7 !important;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] textarea {
+  background-color: #161b23;
+  color: #edf1f5;
+}
+
+:root[data-theme="dark"] button:disabled {
+  color: #6f7b89 !important;
 }
 
 button,

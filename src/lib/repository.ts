@@ -379,6 +379,7 @@ export async function fetchSubscription(subscriptionId: string) {
             create: {
               isRead: false,
               isFavorite: false,
+              isReadLater: false,
             },
           },
         },
@@ -448,6 +449,7 @@ export async function setReadState(itemId: string, isRead: boolean) {
       isRead,
       readAt: isRead ? new Date() : null,
       isFavorite: false,
+      isReadLater: false,
     },
   });
 }
@@ -464,6 +466,24 @@ export async function setFavoriteState(itemId: string, isFavorite: boolean) {
       isRead: false,
       isFavorite,
       favoritedAt: isFavorite ? new Date() : null,
+      isReadLater: false,
+    },
+  });
+}
+
+export async function setReadLaterState(itemId: string, isReadLater: boolean) {
+  return prisma.userItemState.upsert({
+    where: { itemId },
+    update: {
+      isReadLater,
+      readLaterAt: isReadLater ? new Date() : null,
+    },
+    create: {
+      itemId,
+      isRead: false,
+      isFavorite: false,
+      isReadLater,
+      readLaterAt: isReadLater ? new Date() : null,
     },
   });
 }

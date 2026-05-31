@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import { prisma } from "./prisma.ts";
-import { createSubscription } from "./repository.ts";
+import { createSubscription, setReadLaterState } from "./repository.ts";
 
 const originalFetch = globalThis.fetch;
 const testMid = "999999001";
@@ -205,4 +205,41 @@ test("createSubscription rejects a Bilibili subscription when preview cannot fet
   });
 
   assert.equal(saved, null);
+});
+
+test("setReadLaterState toggles an item in the Read Later list", async () => {
+  const subscription = await prisma.subscription.create({
+    data: {
+      title: "Read Later 测试源",
+      sourceType: "rss",
+      inputUrl: "https://example.com/read-later.xml",
+      feedUrl: "https://example.com/read-later.xml",
+      domainKey: "example.com",
+      status: "active",
+    },
+  });
+  const item = await prisma.contentItem.create({
+    data: {
+      subscriptionId: subscription.id,
+      externalId: "read-later-item",
+      title: "稍后阅读测试内容",
+      contentUrl: "https://example.com/read-later-item",
+      mediaType: "article",
+      platform: "rss",
+    },
+  });
+
+  const enabledState = await setReadLaterState(item.id, true);
+
+  assert.equal(enabledState.isReadLater, true);
+  assert.ok(enabledState.readLaterAt);
+
+  const disabledState = await setReadLaterState(item.id, false);
+
+  assert.equal(disabledState.isReadLater, false);
+  assert.equal(disabledState.readLaterAt, null);
+
+  await prisma.subscription.delete({
+    where: { id: subscription.id },
+  });
 });

@@ -1,5 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readLocalSettings, updateLocalSettings } from "./local-settings.ts";
 
 export type FeedSettings = {
   rsshubBaseUrl: string;
@@ -13,11 +12,10 @@ export type PublicFeedSettings = {
   bilibiliCookieConfigured: boolean;
 };
 
-const SETTINGS_FILE = join(process.cwd(), ".lxy-settings.json");
 const DEFAULT_RSSHUB_BASE_URL = "https://rsshub.app";
 
 export async function getFeedSettings(): Promise<FeedSettings> {
-  const stored = await readStoredSettings();
+  const stored = await readLocalSettings();
 
   return {
     rsshubBaseUrl: normalizeBaseUrl(
@@ -61,11 +59,7 @@ export async function updateFeedSettings(input: {
       ? current.rsshubAccessCode
       : input.rsshubAccessCode.trim();
 
-  await writeFile(
-    SETTINGS_FILE,
-    JSON.stringify({ rsshubBaseUrl, rsshubAccessCode, bilibiliCookie }, null, 2),
-    "utf8",
-  );
+  await updateLocalSettings({ rsshubBaseUrl, rsshubAccessCode, bilibiliCookie });
 
   return getPublicFeedSettings();
 }
@@ -80,20 +74,4 @@ function normalizeBaseUrl(value: string) {
   const url = new URL(trimmed);
 
   return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, "")}${url.search}`;
-}
-
-async function readStoredSettings(): Promise<Partial<FeedSettings>> {
-  try {
-    return JSON.parse(await readFile(SETTINGS_FILE, "utf8")) as Partial<FeedSettings>;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error) {
-      const code = (error as { code?: string }).code;
-
-      if (code === "ENOENT") {
-        return {};
-      }
-    }
-
-    throw error;
-  }
 }

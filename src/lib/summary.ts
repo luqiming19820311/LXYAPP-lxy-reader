@@ -1,8 +1,8 @@
 import { prisma } from "./prisma";
 import { getItem } from "./repository";
+import { getAiSettings, getPublicAiSettings } from "./ai-settings.ts";
 
 const SUMMARY_PROMPT_VERSION = "manual-summary-v1";
-const DEFAULT_SUMMARY_MODEL = "gpt-5";
 const MAX_CONTEXT_LENGTH = 12000;
 
 type OpenAIResponse = {
@@ -19,10 +19,7 @@ type OpenAIResponse = {
 };
 
 export function getAiConfig() {
-  return {
-    configured: Boolean(process.env.OPENAI_API_KEY),
-    model: process.env.OPENAI_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL,
-  };
+  return getPublicAiSettings();
 }
 
 export async function generateSummaryForItem(itemId: string) {
@@ -32,7 +29,7 @@ export async function generateSummaryForItem(itemId: string) {
     throw new Error("内容不存在。");
   }
 
-  const config = getAiConfig();
+  const config = await getAiSettings();
 
   if (!config.configured) {
     throw new Error("未配置 OPENAI_API_KEY，无法生成摘要。");
@@ -50,7 +47,11 @@ export async function generateSummaryForItem(itemId: string) {
     throw new Error("当前内容没有足够文本可用于摘要。");
   }
 
-  const summaryText = await requestOpenAISummary(sourceText, config.model);
+  const summaryText = await requestOpenAISummary(
+    sourceText,
+    config.model,
+    config.apiKey,
+  );
 
   return prisma.aiSummary.upsert({
     where: { itemId },
@@ -101,11 +102,11 @@ function stripHtml(value: string | null) {
   return value?.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() || "";
 }
 
-async function requestOpenAISummary(input: string, model: string) {
+async function requestOpenAISummary(input: string, model: string, apiKey: string) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({

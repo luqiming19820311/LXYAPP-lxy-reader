@@ -4,16 +4,15 @@ import {
   Bookmark,
   Bot,
   Check,
-  ChevronDown,
   CirclePlay,
   Copy,
-  Database,
   Download,
   ExternalLink,
   EyeOff,
   FileText,
   Filter,
   Layers3,
+  Monitor,
   Moon,
   MoreVertical,
   Pencil,
@@ -35,9 +34,16 @@ import {
 } from "lucide-react";
 import type { ReactNode, SyntheticEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatOpmlImportMessage } from "@/lib/opml-import-message";
 import { getPreviewEmptyMessage } from "@/lib/preview-display";
+import {
+  getEffectiveTheme,
+  normalizeThemePreference,
+  THEME_STORAGE_KEY,
+  type ThemePreference,
+} from "@/lib/theme-preference";
 
-type View = "all" | "videos" | "articles" | "favorites" | "settings";
+type View = "all" | "videos" | "articles" | "favorites" | "readLater" | "settings";
 type ItemType = "Video" | "Article" | "Update";
 
 type FeedItem = {
@@ -54,6 +60,7 @@ type FeedItem = {
   time: string;
   read: boolean;
   favorite: boolean;
+  readLater: boolean;
   thumbnail?: string;
   contentUrl: string;
   embedUrl?: string;
@@ -91,6 +98,7 @@ type ApiItem = {
   state: {
     isRead: boolean;
     isFavorite: boolean;
+    isReadLater: boolean;
   } | null;
   aiSummary: {
     summaryText: string;
@@ -130,16 +138,11 @@ type AiConfig = {
   model: string;
 };
 
-type FeedSettings = {
-  rsshubBaseUrl: string;
-  rsshubAccessCodeConfigured: boolean;
-  bilibiliCookieConfigured: boolean;
-};
-
 type ItemStateResponse = {
   state?: {
     isRead: boolean;
     isFavorite: boolean;
+    isReadLater: boolean;
   };
   error?: string;
 };
@@ -199,7 +202,9 @@ type RefreshReport = {
   results: RefreshResult[];
 };
 
-type ItemPatch = Partial<Pick<FeedItem, "read" | "favorite" | "aiSummary">>;
+type ItemPatch = Partial<
+  Pick<FeedItem, "read" | "favorite" | "readLater" | "aiSummary">
+>;
 type VideoPlayerStatus = "idle" | "loading" | "playing" | "blocked";
 
 const navigation = [
@@ -234,6 +239,7 @@ function toFeedItem(item: ApiItem): FeedItem {
     time: formatRelativeTime(item.publishedAt),
     read: item.state?.isRead ?? false,
     favorite: item.state?.isFavorite ?? false,
+    readLater: item.state?.isReadLater ?? false,
     thumbnail: item.thumbnailUrl || undefined,
     contentUrl: item.contentUrl,
     embedUrl: item.embedUrl || undefined,
@@ -333,6 +339,10 @@ function filterItemsByView(items: FeedItem[], view: View) {
 
   if (view === "favorites") {
     return items.filter((item) => item.favorite);
+  }
+
+  if (view === "readLater") {
+    return items.filter((item) => item.readLater);
   }
 
   return items;
@@ -548,11 +558,8 @@ export default function Home() {
     configured: false,
     model: "gpt-5",
   });
-  const [feedSettings, setFeedSettings] = useState<FeedSettings>({
-    rsshubBaseUrl: "https://rsshub.app",
-    rsshubAccessCodeConfigured: false,
-    bilibiliCookieConfigured: false,
-  });
+  const [themePreference, setThemePreference] =
+    useState<ThemePreference>("system");
   const [subscriptionInput, setSubscriptionInput] = useState(
     "rsshub://youtube/user/%40xiao_lin_shuo",
   );
@@ -564,13 +571,11 @@ export default function Home() {
         itemsResponse,
         subscriptionsResponse,
         aiConfigResponse,
-        feedSettingsResponse,
       ] =
         await Promise.all([
           fetchWithTimeout("/api/items", {}, 10000),
           fetchWithTimeout("/api/subscriptions", {}, 10000),
           fetchWithTimeout("/api/ai/config", {}, 10000),
-          fetchWithTimeout("/api/settings/feed", {}, 10000),
         ]);
 
       if (!itemsResponse.ok || !subscriptionsResponse.ok) {
@@ -584,9 +589,6 @@ export default function Home() {
       const nextAiConfig = aiConfigResponse.ok
         ? ((await aiConfigResponse.json()) as AiConfig)
         : null;
-      const nextFeedSettings = feedSettingsResponse.ok
-        ? ((await feedSettingsResponse.json()) as { settings: FeedSettings }).settings
-        : null;
       const nextItems = itemsJson.items.map((item) => ({
         ...toFeedItem(item),
         ...stateOverridesRef.current[item.id],
@@ -596,9 +598,6 @@ export default function Home() {
       setSubscriptions(subscriptionsJson.subscriptions);
       if (nextAiConfig) {
         setAiConfig(nextAiConfig);
-      }
-      if (nextFeedSettings) {
-        setFeedSettings(nextFeedSettings);
       }
       setLoadError("");
       setSelectedId((current) =>
@@ -616,6 +615,49 @@ export default function Home() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function applyTheme(preference: ThemePreference) {
+      const effectiveTheme = getEffectiveTheme(preference, mediaQuery.matches);
+      document.documentElement.dataset.theme = effectiveTheme;
+      document.documentElement.dataset.themePreference = preference;
+    }
+
+    const storedPreference = normalizeThemePreference(
+      window.localStorage.getItem(THEME_STORAGE_KEY),
+    );
+
+    setThemePreference(storedPreference);
+    applyTheme(storedPreference);
+
+    function handleSystemThemeChange() {
+      setThemePreference((currentPreference) => {
+        if (currentPreference === "system") {
+          applyTheme(currentPreference);
+        }
+
+        return currentPreference;
+      });
+    }
+
+    mediaQuery.addEventListener("change", handleSystemThemeChange);
+
+    return () => {
+      mediaQuery.removeEventListener("change", handleSystemThemeChange);
+    };
+  }, []);
+
+  function handleThemePreferenceChange(preference: ThemePreference) {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const effectiveTheme = getEffectiveTheme(preference, mediaQuery.matches);
+
+    setThemePreference(preference);
+    window.localStorage.setItem(THEME_STORAGE_KEY, preference);
+    document.documentElement.dataset.theme = effectiveTheme;
+    document.documentElement.dataset.themePreference = preference;
+  }
 
   const sources = useMemo(
     () =>
@@ -665,7 +707,7 @@ export default function Home() {
 
   async function mutateItemState(
     id: string,
-    endpoint: "read" | "unread" | "favorite" | "unfavorite",
+    endpoint: "read" | "unread" | "favorite" | "unfavorite" | "read-later" | "unread-later",
     patch: ItemPatch,
   ) {
     const previous = items.find((item) => item.id === id);
@@ -700,6 +742,7 @@ export default function Home() {
         const confirmedPatch = {
           read: json.state.isRead,
           favorite: json.state.isFavorite,
+          readLater: json.state.isReadLater,
         };
 
         stateOverridesRef.current[id] = {
@@ -712,7 +755,10 @@ export default function Home() {
             item.id === id ? { ...item, ...confirmedPatch } : item,
           );
 
-          if (activeView === "favorites" && endpoint === "unfavorite") {
+          if (
+            (activeView === "favorites" && endpoint === "unfavorite") ||
+            (activeView === "readLater" && endpoint === "unread-later")
+          ) {
             queueMicrotask(() =>
               selectNextVisibleItem(next, activeView, selectedSourceId, id),
             );
@@ -725,10 +771,12 @@ export default function Home() {
       stateOverridesRef.current[id] = {
         read: previous.read,
         favorite: previous.favorite,
+        readLater: previous.readLater,
       };
       patchItem(id, {
         read: previous.read,
         favorite: previous.favorite,
+        readLater: previous.readLater,
       });
       setActionError(getRequestErrorMessage(error, "操作失败。"));
     } finally {
@@ -760,6 +808,14 @@ export default function Home() {
       item.id,
       item.favorite ? "unfavorite" : "favorite",
       { favorite: !item.favorite },
+    );
+  }
+
+  async function handleToggleReadLater(item: FeedItem) {
+    await mutateItemState(
+      item.id,
+      item.readLater ? "unread-later" : "read-later",
+      { readLater: !item.readLater },
     );
   }
 
@@ -1126,9 +1182,10 @@ export default function Home() {
       {activeView === "settings" ? (
         <SettingsView
           aiConfig={aiConfig}
-          feedSettings={feedSettings}
           subscriptions={subscriptions}
-          onFeedSettingsChange={setFeedSettings}
+          themePreference={themePreference}
+          onAiConfigChange={setAiConfig}
+          onThemePreferenceChange={handleThemePreferenceChange}
           onUpdateSubscription={handleUpdateSubscription}
           onDeleteSubscription={handleDeleteSubscription}
           onImportComplete={loadData}
@@ -1174,6 +1231,7 @@ export default function Home() {
               summaryError={summaryErrors[selectedItem.id] || ""}
               onToggleRead={() => void handleToggleRead(selectedItem)}
               onToggleFavorite={() => void handleToggleFavorite(selectedItem)}
+              onToggleReadLater={() => void handleToggleReadLater(selectedItem)}
               onOpenOriginal={() => handleOpenOriginal(selectedItem)}
               onCopyLink={() => void handleCopyLink(selectedItem)}
               onGenerateSummary={() => void handleGenerateSummary(selectedItem)}
@@ -1423,7 +1481,12 @@ function Sidebar({
 
         <button
           type="button"
-          className="flex h-12 w-full items-center gap-3 border-l-[3px] border-transparent px-5 text-left text-[15px] font-semibold text-[#525960] transition hover:bg-[#efedf0]"
+          onClick={() => onChangeView("readLater")}
+          className={`flex h-12 w-full items-center gap-3 border-l-[3px] px-5 text-left text-[15px] font-semibold transition ${
+            activeView === "readLater"
+              ? "border-[#3f5268] bg-[#eceaed] text-[#334154]"
+              : "border-transparent text-[#525960] hover:bg-[#efedf0]"
+          }`}
         >
           <Bookmark size={20} strokeWidth={2.2} />
           Read Later
@@ -1584,7 +1647,9 @@ function Timeline({
         ? "Articles"
         : activeView === "favorites"
           ? "Favorites"
-          : "All Feeds";
+          : activeView === "readLater"
+            ? "Read Later"
+            : "All Feeds";
   const title = selectedSourceName || viewTitle;
 
   return (
@@ -1811,6 +1876,7 @@ function DetailPanel({
   summaryError,
   onToggleRead,
   onToggleFavorite,
+  onToggleReadLater,
   onOpenOriginal,
   onCopyLink,
   onGenerateSummary,
@@ -1824,6 +1890,7 @@ function DetailPanel({
   summaryError: string;
   onToggleRead: () => void;
   onToggleFavorite: () => void;
+  onToggleReadLater: () => void;
   onOpenOriginal: () => void;
   onCopyLink: () => void;
   onGenerateSummary: () => void;
@@ -1865,6 +1932,22 @@ function DetailPanel({
             }`}
           >
             <Star size={22} fill={item.favorite ? "currentColor" : "none"} />
+          </button>
+          <button
+            type="button"
+            onClick={onToggleReadLater}
+            disabled={isBusy}
+            aria-label={item.readLater ? "Remove from Read Later" : "Read Later"}
+            className={`flex h-10 w-10 items-center justify-center rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${
+              item.readLater
+                ? "bg-[#34495f] text-white"
+                : "bg-[#eef0f3] text-[#34495f] hover:bg-white"
+            }`}
+          >
+            <Bookmark
+              size={22}
+              fill={item.readLater ? "currentColor" : "none"}
+            />
           </button>
           <button
             type="button"
@@ -2338,17 +2421,19 @@ function EmptyState({ onAddSubscription }: { onAddSubscription: () => void }) {
 
 function SettingsView({
   aiConfig,
-  feedSettings,
   subscriptions,
-  onFeedSettingsChange,
+  themePreference,
+  onAiConfigChange,
+  onThemePreferenceChange,
   onUpdateSubscription,
   onDeleteSubscription,
   onImportComplete,
 }: {
   aiConfig: AiConfig;
-  feedSettings: FeedSettings;
   subscriptions: ApiSubscription[];
-  onFeedSettingsChange: (settings: FeedSettings) => void;
+  themePreference: ThemePreference;
+  onAiConfigChange: (config: AiConfig) => void;
+  onThemePreferenceChange: (preference: ThemePreference) => void;
   onUpdateSubscription: (
     subscriptionId: string,
     patch: Pick<Partial<ApiSubscription>, "title" | "status">,
@@ -2361,10 +2446,10 @@ function SettingsView({
   );
   const [draftTitles, setDraftTitles] = useState<Record<string, string>>({});
   const [isImportingOpml, setIsImportingOpml] = useState(false);
-  const [rsshubDraft, setRsshubDraft] = useState(feedSettings.rsshubBaseUrl);
-  const [bilibiliCookieDraft, setBilibiliCookieDraft] = useState("");
-  const [isSavingFeedSettings, setIsSavingFeedSettings] = useState(false);
-  const [feedSettingsMessage, setFeedSettingsMessage] = useState("");
+  const [openaiApiKeyDraft, setOpenaiApiKeyDraft] = useState("");
+  const [openaiModelDraft, setOpenaiModelDraft] = useState(aiConfig.model);
+  const [isSavingAiSettings, setIsSavingAiSettings] = useState(false);
+  const [aiSettingsMessage, setAiSettingsMessage] = useState("");
   const [opmlMessage, setOpmlMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const effectiveSelectedSubscriptionId = subscriptions.some(
@@ -2381,40 +2466,43 @@ function SettingsView({
     ? (draftTitles[selectedSubscription.id] ?? selectedSubscription.title)
     : "";
 
-  async function handleSaveFeedSettings(clearBilibiliCookie = false) {
-    setIsSavingFeedSettings(true);
-    setFeedSettingsMessage("");
+  async function handleSaveAiSettings(clearOpenaiApiKey = false) {
+    setIsSavingAiSettings(true);
+    setAiSettingsMessage("");
 
     try {
       const response = await fetchWithTimeout(
-        "/api/settings/feed",
+        "/api/ai/config",
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            rsshubBaseUrl: rsshubDraft,
-            bilibiliCookie: bilibiliCookieDraft || undefined,
-            clearBilibiliCookie,
+            openaiApiKey: openaiApiKeyDraft || undefined,
+            openaiSummaryModel: openaiModelDraft,
+            clearOpenaiApiKey,
           }),
         },
         10000,
       );
-      const json = (await response.json()) as {
-        settings?: FeedSettings;
-        error?: string;
-      };
+      const json = (await response.json()) as AiConfig & { error?: string };
 
-      if (!response.ok || !json.settings) {
-        throw new Error(json.error || "保存抓取设置失败。");
+      if (!response.ok || typeof json.configured !== "boolean") {
+        throw new Error(json.error || "保存 AI 设置失败。");
       }
 
-      onFeedSettingsChange(json.settings);
-      setBilibiliCookieDraft("");
-      setFeedSettingsMessage("抓取设置已保存。刷新 Bilibili 来源后生效。");
+      onAiConfigChange({
+        configured: json.configured,
+        model: json.model,
+      });
+      setOpenaiApiKeyDraft("");
+      setOpenaiModelDraft(json.model);
+      setAiSettingsMessage(
+        clearOpenaiApiKey ? "AI Key 已清除。" : "AI 设置已保存。",
+      );
     } catch (error) {
-      setFeedSettingsMessage(getRequestErrorMessage(error, "保存抓取设置失败。"));
+      setAiSettingsMessage(getRequestErrorMessage(error, "保存 AI 设置失败。"));
     } finally {
-      setIsSavingFeedSettings(false);
+      setIsSavingAiSettings(false);
     }
   }
 
@@ -2474,9 +2562,7 @@ function SettingsView({
       }
 
       await onImportComplete();
-      setOpmlMessage(
-        `导入完成：新增 ${json.imported} 个，更新 ${json.updated} 个，失败 ${json.failed} 个。`,
-      );
+      setOpmlMessage(formatOpmlImportMessage(json));
     } catch (error) {
       setOpmlMessage(getRequestErrorMessage(error, "OPML 导入失败。"));
     } finally {
@@ -2507,128 +2593,36 @@ function SettingsView({
                 <h3 className="text-[24px] font-bold">General</h3>
               </div>
 
-              <div className="mt-8 grid grid-cols-2 gap-14">
-                <Field label="Theme Preference">
-                  <div className="inline-flex h-12 overflow-hidden border border-[#cbd0d8] bg-[#f3f1f3]">
-                    <button
-                      type="button"
-                      className="flex w-32 items-center justify-center gap-2 border-r border-[#cbd0d8] bg-white text-[16px] font-semibold text-[#344052]"
-                    >
-                      <Sun size={18} />
-                      Light
-                    </button>
-                    <button
-                      type="button"
-                      className="flex w-32 items-center justify-center gap-2 text-[16px] font-semibold text-[#4e545d]"
-                    >
-                      <Moon size={18} />
-                      Dark
-                    </button>
-                  </div>
-                </Field>
-
-                <Field label="Data Storage Location">
-                  <div className="flex h-12 items-center justify-between border border-[#cbd0d8] bg-[#f3f1f3] px-4 text-[17px] font-medium text-[#4d535c]">
-                    Local SQLite
-                    <Database size={19} />
-                  </div>
-                  <p className="mt-4 text-sm font-bold text-[#647080]">
-                    All feed data is stored securely on your local device.
+              <div className="mt-8">
+                <div>
+                  <p className="mb-3 text-[15px] font-bold text-[#555b64]">
+                    Theme Preference
                   </p>
-                </Field>
+                  <div className="inline-grid h-12 grid-cols-3 overflow-hidden border border-[#cbd0d8] bg-[#f3f1f3]">
+                    <ThemePreferenceButton
+                      active={themePreference === "light"}
+                      icon={<Sun size={18} />}
+                      label="Light"
+                      onClick={() => onThemePreferenceChange("light")}
+                    />
+                    <ThemePreferenceButton
+                      active={themePreference === "dark"}
+                      icon={<Moon size={18} />}
+                      label="Dark"
+                      onClick={() => onThemePreferenceChange("dark")}
+                    />
+                    <ThemePreferenceButton
+                      active={themePreference === "system"}
+                      icon={<Monitor size={18} />}
+                      label="跟随系统"
+                      onClick={() => onThemePreferenceChange("system")}
+                    />
+                  </div>
+                </div>
               </div>
             </section>
 
-            <div className="mt-7 grid grid-cols-2 gap-7">
-              <section className="rounded-md border border-[#cbd0d8] bg-white p-7">
-                <div className="flex items-center gap-3 text-[#2d3847]">
-                  <Rss size={21} />
-                  <h3 className="text-[24px] font-bold">Network</h3>
-                </div>
-                <div className="mt-8 space-y-6">
-	                  <Field label="RSSHub Base URL">
-	                    <input
-	                      value={rsshubDraft}
-	                      onChange={(event) => setRsshubDraft(event.target.value)}
-	                      placeholder="https://your-rsshub.example.com 或带 ?format=json&code=..."
-	                      className="h-12 w-full border border-[#cbd0d8] bg-white px-4 text-[17px] font-medium text-[#2d333b] outline-none"
-	                    />
-	                    <p className="mt-3 text-sm font-bold leading-6 text-[#647080]">
-	                      私有 RSSHub 可直接填带 query 的地址，例如包含 format=json 和 code。
-	                    </p>
-	                  </Field>
-                  <Field
-                    label="Bilibili Cookie"
-                    accessory={
-                      <span
-                        className={`text-sm font-bold ${
-                          feedSettings.bilibiliCookieConfigured
-                            ? "text-[#147a55]"
-                            : "text-[#a15f13]"
-                        }`}
-                      >
-                        {feedSettings.bilibiliCookieConfigured
-                          ? "Configured"
-                          : "Missing"}
-                      </span>
-                    }
-                  >
-                    <textarea
-                      value={bilibiliCookieDraft}
-                      onChange={(event) =>
-                        setBilibiliCookieDraft(event.target.value)
-                      }
-                      placeholder={
-                        feedSettings.bilibiliCookieConfigured
-                          ? "已保存 Cookie。粘贴新 Cookie 可替换。"
-                          : "粘贴 Bilibili 登录后的 Cookie"
-                      }
-                      rows={4}
-                      className="w-full resize-none border border-[#cbd0d8] bg-white px-4 py-3 text-[14px] font-medium leading-6 text-[#2d333b] outline-none"
-                    />
-                    <p className="mt-3 text-sm font-bold leading-6 text-[#647080]">
-                      Cookie 只保存在本机 .lxy-settings.json，用于绕过匿名接口风控。
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveFeedSettings(false)}
-                        disabled={isSavingFeedSettings}
-                        className="flex h-10 items-center gap-2 bg-[#4b5b70] px-4 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <Save size={16} />
-                        {isSavingFeedSettings ? "Saving" : "Save Feed Settings"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveFeedSettings(true)}
-                        disabled={
-                          isSavingFeedSettings ||
-                          !feedSettings.bilibiliCookieConfigured
-                        }
-                        className="h-10 border border-[#cbd0d8] bg-white px-4 text-[14px] font-semibold text-[#303843] transition hover:bg-[#f4f5f6] disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Clear Cookie
-                      </button>
-                    </div>
-                    {feedSettingsMessage ? (
-                      <p className="mt-3 text-sm font-bold text-[#4f5660]">
-                        {feedSettingsMessage}
-                      </p>
-                    ) : null}
-                  </Field>
-                  <Field label="Background Refresh Interval">
-                    <button
-                      type="button"
-                      className="flex h-12 w-full items-center justify-between border border-[#cbd0d8] bg-white px-4 text-left text-[17px] font-medium text-[#2d333b]"
-                    >
-                      Every 1 Hour
-                      <ChevronDown size={19} />
-                    </button>
-                  </Field>
-                </div>
-              </section>
-
+            <div className="mt-7 grid grid-cols-1 gap-7">
               <section className="rounded-md border border-[#cbd0d8] bg-white p-7">
                 <div className="flex items-center gap-3 text-[#2d3847]">
                   <Bot size={21} />
@@ -2651,26 +2645,56 @@ function SettingsView({
                   >
                     <div className="flex h-12 items-center border border-[#cbd0d8] bg-white px-4">
                       <input
-                        value={
-                          aiConfig.configured
-                            ? "••••••••••••••••••••••"
-                            : "OPENAI_API_KEY"
+                        type="password"
+                        value={openaiApiKeyDraft}
+                        onChange={(event) =>
+                          setOpenaiApiKeyDraft(event.target.value)
                         }
-                        readOnly
+                        placeholder={
+                          aiConfig.configured
+                            ? "已保存 Key。粘贴新 Key 可替换。"
+                            : "粘贴 OpenAI API Key"
+                        }
                         className="min-w-0 flex-1 text-[17px] font-medium text-[#2d333b] outline-none"
                       />
                       <EyeOff size={20} />
                     </div>
+                    <p className="mt-3 text-sm font-bold leading-6 text-[#647080]">
+                      API Key 只保存在本机 .lxy-settings.json，前端不会回显明文。
+                    </p>
                   </Field>
                   <Field label="Default AI Model">
+                    <input
+                      value={openaiModelDraft}
+                      onChange={(event) => setOpenaiModelDraft(event.target.value)}
+                      placeholder="gpt-5"
+                      className="h-12 w-full border border-[#cbd0d8] bg-white px-4 text-[17px] font-medium text-[#2d333b] outline-none"
+                    />
+                  </Field>
+                  <div className="flex flex-wrap gap-3">
                     <button
                       type="button"
-                      className="flex h-12 w-full items-center justify-between border border-[#cbd0d8] bg-white px-4 text-left text-[17px] font-medium text-[#2d333b]"
+                      onClick={() => void handleSaveAiSettings(false)}
+                      disabled={isSavingAiSettings}
+                      className="flex h-10 items-center gap-2 bg-[#4b5b70] px-4 text-[14px] font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {aiConfig.model}
-                      <ChevronDown size={19} />
+                      <Save size={16} />
+                      {isSavingAiSettings ? "Saving" : "Save AI Settings"}
                     </button>
-                  </Field>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveAiSettings(true)}
+                      disabled={isSavingAiSettings || !aiConfig.configured}
+                      className="h-10 border border-[#cbd0d8] bg-white px-4 text-[14px] font-semibold text-[#303843] transition hover:bg-[#f4f5f6] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Clear Key
+                    </button>
+                  </div>
+                  {aiSettingsMessage ? (
+                    <p className="text-sm font-bold text-[#4f5660]">
+                      {aiSettingsMessage}
+                    </p>
+                  ) : null}
                 </div>
               </section>
             </div>
@@ -2937,6 +2961,34 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+function ThemePreferenceButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`flex w-36 items-center justify-center gap-2 border-r border-[#cbd0d8] px-4 text-[16px] font-semibold transition last:border-r-0 ${
+        active
+          ? "bg-white text-[#344052]"
+          : "text-[#4e545d] hover:bg-white/70"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 

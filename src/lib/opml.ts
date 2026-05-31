@@ -79,7 +79,13 @@ export function parseSubscriptionsOpml(opml: string) {
 
   while ((match = outlinePattern.exec(opml))) {
     const attrs = match[1] ?? "";
-    const feedUrl = getAttribute(attrs, "xmlUrl").trim();
+    const type = getAttribute(attrs, "type").trim().toLowerCase();
+    const fallbackUrl = getAttribute(attrs, "url").trim();
+    const feedUrl = (
+      getAttribute(attrs, "xmlUrl") ||
+      getAttribute(attrs, "feedUrl") ||
+      (isFeedLikeOutline(type) ? fallbackUrl : "")
+    ).trim();
 
     if (!feedUrl) {
       continue;
@@ -99,4 +105,8 @@ export function parseSubscriptionsOpml(opml: string) {
   }
 
   return Array.from(subscriptions.values());
+}
+
+function isFeedLikeOutline(type: string) {
+  return !type || ["atom", "feed", "rss"].includes(type);
 }

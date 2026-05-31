@@ -58,8 +58,10 @@ model UserItemState {
   itemId      String      @unique
   isRead      Boolean     @default(false)
   isFavorite  Boolean     @default(false)
+  isReadLater Boolean     @default(false)
   readAt      DateTime?
   favoritedAt DateTime?
+  readLaterAt DateTime?
   item        ContentItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
 }
 

@@ -67,8 +67,10 @@ CREATE TABLE IF NOT EXISTS "UserItemState" (
   "itemId" TEXT NOT NULL,
   "isRead" BOOLEAN NOT NULL DEFAULT false,
   "isFavorite" BOOLEAN NOT NULL DEFAULT false,
+  "isReadLater" BOOLEAN NOT NULL DEFAULT false,
   "readAt" DATETIME,
   "favoritedAt" DATETIME,
+  "readLaterAt" DATETIME,
   CONSTRAINT "UserItemState_itemId_fkey"
     FOREIGN KEY ("itemId")
     REFERENCES "ContentItem" ("id")
