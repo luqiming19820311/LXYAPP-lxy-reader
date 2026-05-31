@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronRight,
   CirclePlay,
   Copy,
   Database,
@@ -13,6 +14,8 @@ import {
   EyeOff,
   FileText,
   Filter,
+  Folder,
+  FolderOpen,
   Layers3,
   Moon,
   MoreVertical,
@@ -69,6 +72,15 @@ type SourceItem = {
   unread: number;
   status: "online" | "failed" | "idle" | "inactive";
   color: string;
+  folderId: string | null;
+};
+
+type SourceFolder = {
+  id: string;
+  name: string;
+  subscriptionCount: number;
+  unreadCount: number;
+  subscriptionIds: string[];
 };
 
 type ApiItem = {
@@ -104,12 +116,20 @@ type ApiSubscription = {
   feedUrl: string;
   siteUrl: string | null;
   status: string;
+  folderId: string | null;
   lastError: string | null;
   lastFetchedAt: string | null;
   createdAt: string;
   _count?: {
     items: number;
   };
+};
+
+type SourceFolderActionResponse = {
+  folder?: SourceFolder;
+  folders?: SourceFolder[];
+  ok?: boolean;
+  error?: string;
 };
 
 type PreviewResult = {
@@ -192,6 +212,7 @@ type RefreshReport = {
 
 type ItemPatch = Partial<Pick<FeedItem, "read" | "favorite" | "aiSummary">>;
 type VideoPlayerStatus = "idle" | "loading" | "playing" | "blocked";
+type NavUnreadCounts = Record<"all" | "videos" | "articles" | "favorites", number>;
 
 const navigation = [
   { id: "all" as const, label: "All Feeds", icon: Layers3 },
@@ -256,6 +277,7 @@ function toSourceItem(
           ? "online"
           : "idle",
     color: getSourceColor(subscription.sourceType),
+    folderId: subscription.folderId,
   };
 }
 
@@ -313,6 +335,10 @@ function formatDateTime(value: string | null) {
   }).format(new Date(value));
 }
 
+function formatCompactCount(value: number) {
+  return value > 99 ? "99+" : `${value}`;
+}
+
 function filterItemsByView(items: FeedItem[], view: View) {
   if (view === "videos") {
     return items.filter((item) => item.type === "Video");
@@ -349,9 +375,12 @@ function getVisibleItems(
   view: View,
   query: string,
   sourceId: string,
+  folderSourceIds: string[] = [],
 ) {
   const sourceItems = sourceId
     ? items.filter((item) => item.subscriptionId === sourceId)
+    : folderSourceIds.length
+      ? items.filter((item) => folderSourceIds.includes(item.subscriptionId))
     : items;
 
   return filterItemsBySearch(filterItemsByView(sourceItems, view), query);
@@ -516,8 +545,10 @@ export default function Home() {
   const [activeView, setActiveView] = useState<View>("all");
   const [items, setItems] = useState<FeedItem[]>([]);
   const [subscriptions, setSubscriptions] = useState<ApiSubscription[]>([]);
+  const [sourceFolders, setSourceFolders] = useState<SourceFolder[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showFolderModal, setShowFolderModal] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [isLoadingData, setIsLoadingData] = useState(true);
@@ -531,6 +562,7 @@ export default function Home() {
   const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [selectedFolderId, setSelectedFolderId] = useState("");
   const [busyItemIds, setBusyItemIds] = useState<Set<string>>(new Set());
   const [summarizingItemIds, setSummarizingItemIds] = useState<Set<string>>(
     new Set(),
@@ -546,20 +578,29 @@ export default function Home() {
 
   async function loadData() {
     try {
-      const [itemsResponse, subscriptionsResponse, aiConfigResponse] =
+      const [
+        itemsResponse,
+        subscriptionsResponse,
+        foldersResponse,
+        aiConfigResponse,
+      ] =
         await Promise.all([
           fetchWithTimeout("/api/items", {}, 10000),
           fetchWithTimeout("/api/subscriptions", {}, 10000),
+          fetchWithTimeout("/api/source-folders", {}, 10000),
           fetchWithTimeout("/api/ai/config", {}, 10000),
         ]);
 
-      if (!itemsResponse.ok || !subscriptionsResponse.ok) {
+      if (!itemsResponse.ok || !subscriptionsResponse.ok || !foldersResponse.ok) {
         throw new Error("数据加载失败，请重试。");
       }
 
       const itemsJson = (await itemsResponse.json()) as { items: ApiItem[] };
       const subscriptionsJson = (await subscriptionsResponse.json()) as {
         subscriptions: ApiSubscription[];
+      };
+      const foldersJson = (await foldersResponse.json()) as {
+        folders: SourceFolder[];
       };
       const nextAiConfig = aiConfigResponse.ok
         ? ((await aiConfigResponse.json()) as AiConfig)
@@ -571,6 +612,7 @@ export default function Home() {
 
       setItems(nextItems);
       setSubscriptions(subscriptionsJson.subscriptions);
+      setSourceFolders(foldersJson.folders);
       if (nextAiConfig) {
         setAiConfig(nextAiConfig);
       }
@@ -596,10 +638,24 @@ export default function Home() {
       subscriptions.map((subscription) => toSourceItem(subscription, items)),
     [items, subscriptions],
   );
+  const selectedFolder = sourceFolders.find(
+    (folder) => folder.id === selectedFolderId,
+  );
+  const selectedFolderSourceIds = useMemo(
+    () => selectedFolder?.subscriptionIds ?? [],
+    [selectedFolder?.subscriptionIds],
+  );
 
   const filteredItems = useMemo(
-    () => getVisibleItems(items, activeView, searchQuery, selectedSourceId),
-    [activeView, items, searchQuery, selectedSourceId],
+    () =>
+      getVisibleItems(
+        items,
+        activeView,
+        searchQuery,
+        selectedSourceId,
+        selectedFolderSourceIds,
+      ),
+    [activeView, items, searchQuery, selectedFolderSourceIds, selectedSourceId],
   );
 
   const selectedSource = sources.find((source) => source.id === selectedSourceId);
@@ -609,6 +665,12 @@ export default function Home() {
 
   const isEmptyState = activeView === "all" && items.length === 0;
   const unreadCount = items.filter((item) => !item.read).length;
+  const navUnreadCounts: NavUnreadCounts = {
+    all: unreadCount,
+    videos: items.filter((item) => item.type === "Video" && !item.read).length,
+    articles: items.filter((item) => item.type === "Article" && !item.read).length,
+    favorites: items.filter((item) => item.favorite && !item.read).length,
+  };
 
   function patchItem(id: string, patch: ItemPatch) {
     setItems((current) =>
@@ -620,6 +682,7 @@ export default function Home() {
     nextItems: FeedItem[],
     view: View,
     sourceId: string,
+    folderSourceIds: string[] = [],
     removedId?: string,
   ) {
     const nextVisibleItems = getVisibleItems(
@@ -627,6 +690,7 @@ export default function Home() {
       view,
       searchQuery,
       sourceId,
+      folderSourceIds,
     );
     const hasCurrentSelection = nextVisibleItems.some(
       (item) => item.id === selectedId && item.id !== removedId,
@@ -688,7 +752,13 @@ export default function Home() {
 
           if (activeView === "favorites" && endpoint === "unfavorite") {
             queueMicrotask(() =>
-              selectNextVisibleItem(next, activeView, selectedSourceId, id),
+              selectNextVisibleItem(
+                next,
+                activeView,
+                selectedSourceId,
+                selectedFolderSourceIds,
+                id,
+              ),
             );
           }
 
@@ -807,6 +877,10 @@ export default function Home() {
   async function handleRefreshFeeds() {
     const candidateSubscriptions = selectedSourceId
       ? subscriptions.filter((subscription) => subscription.id === selectedSourceId)
+      : selectedFolderId
+        ? subscriptions.filter(
+            (subscription) => subscription.folderId === selectedFolderId,
+          )
       : subscriptions;
     const targetSubscriptions = candidateSubscriptions.filter(
       (subscription) => subscription.status !== "inactive",
@@ -882,7 +956,9 @@ export default function Home() {
       const failed = results.filter((result) => result.status === "failed").length;
       const success = results.length - failed;
       const report = {
-        scope: selectedSourceId ? targetSubscriptions[0]?.title || "Selected source" : "All feeds",
+        scope: selectedSourceId
+          ? targetSubscriptions[0]?.title || "Selected source"
+          : selectedFolder?.name || "All feeds",
         total: candidateSubscriptions.length,
         success,
         failed,
@@ -966,6 +1042,7 @@ export default function Home() {
       setShowAddModal(false);
       setActiveView("all");
       setSelectedSourceId("");
+      setSelectedFolderId("");
       setActionError(
         json.alreadyExisted
           ? "订阅源已存在，已更新并刷新内容。"
@@ -980,7 +1057,7 @@ export default function Home() {
 
   async function handleUpdateSubscription(
     subscriptionId: string,
-    patch: Pick<Partial<ApiSubscription>, "title" | "status">,
+    patch: Pick<Partial<ApiSubscription>, "title" | "status" | "folderId">,
   ) {
     setActionError("");
 
@@ -1005,6 +1082,93 @@ export default function Home() {
     } catch (error) {
       setActionError(getRequestErrorMessage(error, "更新订阅源失败。"));
     }
+  }
+
+  async function handleCreateSourceFolder(name: string) {
+    setActionError("");
+
+    try {
+      const response = await fetchWithTimeout(
+        "/api/source-folders",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+        10000,
+      );
+      const json = (await response.json()) as SourceFolderActionResponse;
+
+      if (!response.ok || !json.folder) {
+        throw new Error(json.error || "创建文件夹失败。");
+      }
+
+      await loadData();
+      setActionError("文件夹已创建。");
+      return json.folder.id;
+    } catch (error) {
+      setActionError(getRequestErrorMessage(error, "创建文件夹失败。"));
+      return "";
+    }
+  }
+
+  async function handleRenameSourceFolder(folderId: string, name: string) {
+    setActionError("");
+
+    try {
+      const response = await fetchWithTimeout(
+        `/api/source-folders/${folderId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+        10000,
+      );
+      const json = (await response.json()) as SourceFolderActionResponse;
+
+      if (!response.ok || !json.folder) {
+        throw new Error(json.error || "重命名文件夹失败。");
+      }
+
+      await loadData();
+      setActionError("文件夹已重命名。");
+    } catch (error) {
+      setActionError(getRequestErrorMessage(error, "重命名文件夹失败。"));
+    }
+  }
+
+  async function handleDeleteSourceFolder(folderId: string) {
+    setActionError("");
+
+    try {
+      const response = await fetchWithTimeout(
+        `/api/source-folders/${folderId}`,
+        { method: "DELETE" },
+        10000,
+      );
+      const json = (await response.json()) as SourceFolderActionResponse;
+
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || "删除文件夹失败。");
+      }
+
+      if (selectedFolderId === folderId) {
+        setSelectedFolderId("");
+        setSelectedSourceId("");
+      }
+      await loadData();
+      setActionError("文件夹已删除，订阅源已移至 Uncategorized。");
+    } catch (error) {
+      setActionError(getRequestErrorMessage(error, "删除文件夹失败。"));
+    }
+  }
+
+  async function handleAssignSubscriptionFolder(
+    subscriptionId: string,
+    folderId: string | null,
+  ) {
+    await handleUpdateSubscription(subscriptionId, { folderId });
   }
 
   async function handleDeleteSubscription(subscriptionId: string) {
@@ -1041,26 +1205,56 @@ export default function Home() {
       <Sidebar
         activeView={activeView}
         sources={sources}
+        folders={sourceFolders}
         selectedSourceId={selectedSourceId}
-        unreadCount={unreadCount}
+        selectedFolderId={selectedFolderId}
+        navUnreadCounts={navUnreadCounts}
         onChangeView={(view) => {
           const nextSourceId = view === "all" ? "" : selectedSourceId;
+          const nextFolderId = view === "all" ? "" : selectedFolderId;
+          const nextFolderSourceIds =
+            sourceFolders.find((folder) => folder.id === nextFolderId)
+              ?.subscriptionIds ?? [];
 
           setActiveView(view);
           setSelectedSourceId(nextSourceId);
+          setSelectedFolderId(nextFolderId);
 
           const nextItem =
             view === "settings"
               ? selectedId
-              : getVisibleItems(items, view, searchQuery, nextSourceId)[0]?.id;
+              : getVisibleItems(
+                  items,
+                  view,
+                  searchQuery,
+                  nextSourceId,
+                  nextFolderSourceIds,
+                )[0]?.id;
           if (nextItem) {
             setSelectedId(nextItem);
           } else if (view !== "settings") {
             setSelectedId("");
           }
         }}
+        onSelectFolder={(folderId) => {
+          const folderSourceIds =
+            sourceFolders.find((folder) => folder.id === folderId)
+              ?.subscriptionIds ?? [];
+
+          setSelectedFolderId(folderId);
+          setSelectedSourceId("");
+          const nextItem = getVisibleItems(
+            items,
+            activeView,
+            searchQuery,
+            "",
+            folderSourceIds,
+          )[0]?.id;
+          setSelectedId(nextItem || "");
+        }}
         onSelectSource={(sourceId) => {
           setSelectedSourceId(sourceId);
+          setSelectedFolderId("");
           const nextItem = getVisibleItems(
             items,
             activeView,
@@ -1071,6 +1265,7 @@ export default function Home() {
         }}
         onClearSource={() => {
           setSelectedSourceId("");
+          setSelectedFolderId("");
           const nextItem = getVisibleItems(
             items,
             activeView,
@@ -1080,6 +1275,7 @@ export default function Home() {
           setSelectedId(nextItem || "");
         }}
         onAddSubscription={() => setShowAddModal(true)}
+        onManageFolders={() => setShowFolderModal(true)}
         onRefreshFeeds={handleRefreshFeeds}
         isRefreshing={isRefreshing}
       />
@@ -1118,16 +1314,36 @@ export default function Home() {
             sources={sources}
             selectedSourceId={selectedSourceId}
             selectedSourceName={selectedSource?.name}
+            folders={sourceFolders}
+            selectedFolderId={selectedFolderId}
+            selectedFolderName={selectedFolder?.name}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onClearSearch={() => setSearchQuery("")}
             onSelectSource={(sourceId) => {
               setSelectedSourceId(sourceId);
+              setSelectedFolderId("");
               const nextItem = getVisibleItems(
                 items,
                 activeView,
                 searchQuery,
                 sourceId,
+              )[0]?.id;
+              setSelectedId(nextItem || "");
+            }}
+            onSelectFolder={(folderId) => {
+              const folderSourceIds =
+                sourceFolders.find((folder) => folder.id === folderId)
+                  ?.subscriptionIds ?? [];
+
+              setSelectedFolderId(folderId);
+              setSelectedSourceId("");
+              const nextItem = getVisibleItems(
+                items,
+                activeView,
+                searchQuery,
+                "",
+                folderSourceIds,
               )[0]?.id;
               setSelectedId(nextItem || "");
             }}
@@ -1163,6 +1379,18 @@ export default function Home() {
           onPreview={handlePreview}
           onClose={() => setShowAddModal(false)}
           onConfirm={handleConfirmSubscription}
+        />
+      ) : null}
+
+      {showFolderModal ? (
+        <SourceFolderModal
+          folders={sourceFolders}
+          subscriptions={subscriptions}
+          onClose={() => setShowFolderModal(false)}
+          onCreateFolder={handleCreateSourceFolder}
+          onRenameFolder={handleRenameSourceFolder}
+          onDeleteFolder={handleDeleteSourceFolder}
+          onAssignSubscription={handleAssignSubscriptionFolder}
         />
       ) : null}
     </main>
@@ -1315,160 +1543,300 @@ function DataErrorState({
 function Sidebar({
   activeView,
   sources,
+  folders,
   selectedSourceId,
-  unreadCount,
+  selectedFolderId,
+  navUnreadCounts,
   onChangeView,
+  onSelectFolder,
   onSelectSource,
   onClearSource,
   onAddSubscription,
+  onManageFolders,
   onRefreshFeeds,
   isRefreshing,
 }: {
   activeView: View;
   sources: SourceItem[];
+  folders: SourceFolder[];
   selectedSourceId: string;
-  unreadCount: number;
+  selectedFolderId: string;
+  navUnreadCounts: NavUnreadCounts;
   onChangeView: (view: View) => void;
+  onSelectFolder: (folderId: string) => void;
   onSelectSource: (sourceId: string) => void;
   onClearSource: () => void;
   onAddSubscription: () => void;
+  onManageFolders: () => void;
   onRefreshFeeds: () => void;
   isRefreshing: boolean;
 }) {
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
+    () => new Set(["uncategorized"]),
+  );
+  const folderGroups = folders.map((folder) => ({
+    ...folder,
+    sources: sources.filter((source) => source.folderId === folder.id),
+  }));
+  const uncategorizedSources = sources.filter((source) => !source.folderId);
+  const refreshLabel = isRefreshing
+    ? "Refreshing"
+    : selectedSourceId
+      ? "Refresh Source"
+      : selectedFolderId
+        ? "Refresh Folder"
+        : "Refresh";
+
+  function setFolderExpanded(folderId: string, expanded: boolean) {
+    setExpandedFolderIds((current) => {
+      const next = new Set(current);
+
+      if (expanded) {
+        next.add(folderId);
+      } else {
+        next.delete(folderId);
+      }
+
+      return next;
+    });
+  }
+
+  function toggleFolder(folderId: string) {
+    setFolderExpanded(folderId, !expandedFolderIds.has(folderId));
+  }
+
   return (
     <aside className="flex h-screen w-[212px] shrink-0 flex-col overflow-hidden border-r border-[#d4d8de] bg-[#f7f5f6] max-md:hidden">
-      <div className="flex h-[102px] shrink-0 items-center gap-3 border-b border-[#d4d8de] px-5">
-        <div className="flex h-11 w-11 items-center justify-center rounded bg-[#48576a] text-xl font-semibold text-white">
-          L
+      <div className="flex h-[102px] shrink-0 items-center justify-between gap-3 border-b border-[#d4d8de] px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded bg-[#48576a] text-xl font-semibold text-white">
+            L
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-[22px] font-bold leading-6 text-[#263241]">LXY</h1>
+            <p className="mt-1 truncate text-[15px] font-semibold text-[#565d66]">
+              AI RSS Reader
+            </p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-[22px] font-bold leading-6 text-[#263241]">LXY</h1>
-          <p className="mt-1 text-[15px] font-semibold text-[#565d66]">
-            AI RSS Reader
-          </p>
-        </div>
-      </div>
-
-      <div className="shrink-0 px-5 pt-6">
         <button
           type="button"
           onClick={onAddSubscription}
-          className="flex h-11 w-full items-center justify-center gap-3 rounded-sm bg-[#4b5b70] text-[15px] font-semibold text-white transition hover:bg-[#3f4d60]"
+          title="Add Subscription"
+          aria-label="Add Subscription"
+          className="group relative flex h-9 w-9 shrink-0 items-center justify-center rounded-sm border border-[#d4d8de] bg-[#eceaed] text-[#46566b] transition hover:border-[#aeb6c2] hover:bg-white hover:text-[#263241]"
         >
-          <Plus size={18} />
-          Add Subscription
+          <Plus size={22} strokeWidth={2.2} />
+          <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+            Add Subscription
+          </span>
         </button>
       </div>
 
-      <nav className="mt-5 shrink-0 space-y-1 px-0">
+      <nav className="grid shrink-0 grid-cols-5 gap-2 border-b border-[#d4d8de] px-4 py-4">
         {navigation.map((item) => {
           const Icon = item.icon;
           const isActive = activeView === item.id;
+          const count = navUnreadCounts[item.id];
 
           return (
             <button
               type="button"
               key={item.id}
               onClick={() => onChangeView(item.id)}
-              className={`flex h-12 w-full items-center gap-3 border-l-[3px] px-5 text-left text-[15px] font-semibold transition ${
+              title={item.label}
+              aria-label={item.label}
+              className={`group relative flex h-9 w-8 items-center justify-center rounded-sm transition ${
                 isActive
-                  ? "border-[#3f5268] bg-[#eceaed] text-[#334154]"
-                  : "border-transparent text-[#525960] hover:bg-[#efedf0]"
+                  ? "bg-[#3f5268] text-white shadow-sm"
+                  : "text-[#525960] hover:bg-[#efedf0] hover:text-[#263241]"
               }`}
             >
               <Icon size={20} strokeWidth={2.2} />
-              <span className="flex-1">{item.label}</span>
-              {item.id === "all" && unreadCount ? (
-                <span className="rounded-full bg-[#3f5268] px-2.5 py-1 text-xs font-bold text-white">
-                  {unreadCount}
+              {count ? (
+                <span
+                  className={`absolute -right-1 -top-1 min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4 ${
+                    isActive
+                      ? "bg-white text-[#3f5268]"
+                      : "bg-[#3f5268] text-white"
+                  }`}
+                >
+                  {formatCompactCount(count)}
                 </span>
               ) : null}
+              <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+                {item.label}
+              </span>
             </button>
           );
         })}
 
         <button
           type="button"
-          className="flex h-12 w-full items-center gap-3 border-l-[3px] border-transparent px-5 text-left text-[15px] font-semibold text-[#525960] transition hover:bg-[#efedf0]"
+          title="Read Later"
+          aria-label="Read Later"
+          className="group relative flex h-9 w-8 items-center justify-center rounded-sm text-[#525960] transition hover:bg-[#efedf0] hover:text-[#263241]"
         >
           <Bookmark size={20} strokeWidth={2.2} />
-          Read Later
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onChangeView("settings")}
-          className={`flex h-12 w-full items-center gap-3 border-l-[3px] px-5 text-left text-[15px] font-semibold transition ${
-            activeView === "settings"
-              ? "border-[#3f5268] bg-[#eceaed] text-[#334154]"
-              : "border-transparent text-[#525960] hover:bg-[#efedf0]"
-          }`}
-        >
-          <Settings size={20} strokeWidth={2.2} />
-          Settings
+          <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+            Read Later
+          </span>
         </button>
       </nav>
 
-      <div className="mt-7 min-h-0 flex-1 overflow-y-auto px-5 pb-4">
+      <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-5 pb-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-xs font-bold uppercase tracking-[0.08em] text-[#5c6168]">
             Sources
           </h2>
-          {selectedSourceId ? (
+          <div className="flex items-center gap-2">
+            {selectedSourceId || selectedFolderId ? (
+              <button
+                type="button"
+                onClick={onClearSource}
+                className="text-xs font-bold text-[#34495f] transition hover:text-[#1f2630]"
+              >
+                All
+              </button>
+            ) : null}
             <button
               type="button"
-              onClick={onClearSource}
-              className="text-xs font-bold text-[#34495f] transition hover:text-[#1f2630]"
+              onClick={onManageFolders}
+              title="Manage source folders"
+              aria-label="Manage source folders"
+              className="flex h-7 w-7 items-center justify-center rounded-sm border border-[#d3d7de] bg-white text-[#34495f] transition hover:border-[#aeb6c2] hover:bg-[#eef1f4]"
             >
-              All
+              <Plus size={16} />
             </button>
-          ) : null}
+          </div>
         </div>
         <div className="mt-4 space-y-2">
-          {sources.map((source) => (
-            <button
-              type="button"
-              key={source.id}
-              onClick={() => onSelectSource(source.id)}
-              className={`flex min-h-9 w-full items-center gap-3 rounded-sm border px-2 py-2 text-left transition ${
-                selectedSourceId === source.id
-                  ? "border-[#c9ced6] bg-white shadow-sm"
-                  : "border-transparent hover:bg-[#efedf0]"
-              }`}
-            >
-              <span
-                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${source.color}`}
-              >
-                {source.initial}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
-                {source.name}
-              </span>
-              <SourceStatusDot status={source.status} />
-              {source.unread ? (
-                <span className="rounded bg-[#e1e0e2] px-2 py-0.5 text-xs font-bold text-[#6a6870]">
-                  {source.unread}
-                </span>
-              ) : null}
-            </button>
-          ))}
+          {folderGroups.map((folder) => {
+            const isExpanded = expandedFolderIds.has(folder.id);
+            const isSelected = selectedFolderId === folder.id;
+
+            return (
+              <div key={folder.id}>
+                <div
+                  className={`flex min-h-9 w-full items-center gap-2 rounded-sm border px-2 py-2 text-left transition ${
+                    isSelected
+                      ? "border-[#c9ced6] bg-white shadow-sm"
+                      : "border-transparent hover:bg-[#efedf0]"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      toggleFolder(folder.id);
+                    }}
+                    aria-label={`${isExpanded ? "Collapse" : "Expand"} folder ${folder.name}`}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center text-[#4b5b70]"
+                  >
+                    {isExpanded ? (
+                      <ChevronDown size={17} />
+                    ) : (
+                      <ChevronRight size={17} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFolderExpanded(folder.id, true);
+                      onSelectFolder(folder.id);
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    {isExpanded ? (
+                      <FolderOpen size={17} className="shrink-0 text-[#4b5b70]" />
+                    ) : (
+                      <Folder size={17} className="shrink-0 text-[#4b5b70]" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-[14px] font-bold text-[#3f4650]">
+                      {folder.name}
+                    </span>
+                    {folder.unreadCount ? (
+                      <span className="rounded bg-[#d9dde3] px-2 py-0.5 text-xs font-bold text-[#5e6671]">
+                        {folder.unreadCount}
+                      </span>
+                    ) : null}
+                  </button>
+                </div>
+                {isExpanded ? (
+                  <div className="mt-1 space-y-1 border-l border-[#d8dce3] pl-5">
+                    {folder.sources.map((source) => (
+                      <SourceButton
+                        key={source.id}
+                        source={source}
+                        isSelected={selectedSourceId === source.id}
+                        onSelect={() => onSelectSource(source.id)}
+                        nested
+                      />
+                    ))}
+                    {folder.sources.length === 0 ? (
+                      <p className="px-2 py-2 text-xs font-bold text-[#8a9098]">
+                        No sources
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {uncategorizedSources.length ? (
+            <div>
+              <div className="px-2 pt-2 text-[11px] font-bold uppercase tracking-[0.08em] text-[#7b828c]">
+                Uncategorized
+              </div>
+              <div className="mt-1 space-y-1">
+                {uncategorizedSources.map((source) => (
+                  <SourceButton
+                    key={source.id}
+                    source={source}
+                    isSelected={selectedSourceId === source.id}
+                    onSelect={() => onSelectSource(source.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="shrink-0 border-t border-[#d4d8de] bg-[#f7f5f6] p-5">
-        <button
-          type="button"
-          onClick={onRefreshFeeds}
-          disabled={isRefreshing || sources.length === 0}
-          className="flex h-10 items-center gap-4 text-[15px] font-semibold text-[#525960] transition hover:text-[#263241] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RefreshCcw size={20} className={isRefreshing ? "animate-spin" : ""} />
-          {isRefreshing
-            ? "Refreshing"
-            : selectedSourceId
-              ? "Refresh Source"
-              : "Refresh"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onRefreshFeeds}
+            disabled={isRefreshing || sources.length === 0}
+            title={refreshLabel}
+            aria-label={refreshLabel}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-sm text-[#525960] transition hover:bg-[#efedf0] hover:text-[#263241] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCcw
+              size={20}
+              className={isRefreshing ? "animate-spin" : ""}
+            />
+            <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+              {refreshLabel}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChangeView("settings")}
+            title="Settings"
+            aria-label="Settings"
+            className={`group relative flex h-10 w-10 items-center justify-center rounded-sm transition ${
+              activeView === "settings"
+                ? "bg-[#3f5268] text-white shadow-sm"
+                : "text-[#525960] hover:bg-[#efedf0] hover:text-[#263241]"
+            }`}
+          >
+            <Settings size={20} strokeWidth={2.2} />
+            <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+              Settings
+            </span>
+          </button>
+        </div>
         <button
           type="button"
           className="mt-4 flex h-10 items-center gap-4 text-[15px] font-semibold text-[#525960]"
@@ -1478,6 +1846,45 @@ function Sidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+function SourceButton({
+  source,
+  isSelected,
+  onSelect,
+  nested = false,
+}: {
+  source: SourceItem;
+  isSelected: boolean;
+  onSelect: () => void;
+  nested?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`flex min-h-9 w-full items-center gap-3 rounded-sm border py-2 text-left transition ${
+        isSelected
+          ? "border-[#c9ced6] bg-white shadow-sm"
+          : "border-transparent hover:bg-[#efedf0]"
+      } ${nested ? "px-1.5" : "px-2"}`}
+    >
+      <span
+        className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${source.color}`}
+      >
+        {source.initial}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
+        {source.name}
+      </span>
+      <SourceStatusDot status={source.status} />
+      {source.unread ? (
+        <span className="rounded bg-[#e1e0e2] px-2 py-0.5 text-xs font-bold text-[#6a6870]">
+          {source.unread}
+        </span>
+      ) : null}
+    </button>
   );
 }
 
@@ -1525,10 +1932,14 @@ function Timeline({
   sources,
   selectedSourceId,
   selectedSourceName,
+  folders,
+  selectedFolderId,
+  selectedFolderName,
   searchQuery,
   onSearchChange,
   onClearSearch,
   onSelectSource,
+  onSelectFolder,
   onSelect,
 }: {
   activeView: View;
@@ -1537,10 +1948,14 @@ function Timeline({
   sources: SourceItem[];
   selectedSourceId: string;
   selectedSourceName?: string;
+  folders: SourceFolder[];
+  selectedFolderId: string;
+  selectedFolderName?: string;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   onClearSearch: () => void;
   onSelectSource: (sourceId: string) => void;
+  onSelectFolder: (folderId: string) => void;
   onSelect: (id: string) => void;
 }) {
   const viewTitle =
@@ -1551,7 +1966,7 @@ function Timeline({
         : activeView === "favorites"
           ? "Favorites"
           : "All Feeds";
-  const title = selectedSourceName || viewTitle;
+  const title = selectedSourceName || selectedFolderName || viewTitle;
 
   return (
     <section className="flex w-[312px] shrink-0 flex-col border-r border-[#d4d8de] bg-[#fbfafb] max-md:w-[45vw]">
@@ -1560,7 +1975,7 @@ function Timeline({
           <h2 className="truncate text-[22px] font-bold text-[#263241]">
             {title}
           </h2>
-          {selectedSourceName ? (
+          {selectedSourceName || selectedFolderName ? (
             <p className="mt-1 text-xs font-bold uppercase tracking-[0.08em] text-[#69717d]">
               {viewTitle}
             </p>
@@ -1569,8 +1984,11 @@ function Timeline({
         <div className="flex items-center gap-3 text-[#303843]">
           <SourceSelect
             sources={sources}
+            folders={folders}
             selectedSourceId={selectedSourceId}
+            selectedFolderId={selectedFolderId}
             onSelectSource={onSelectSource}
+            onSelectFolder={onSelectFolder}
           />
           <SearchBox
             value={searchQuery}
@@ -1590,7 +2008,7 @@ function Timeline({
         {items.length === 0 ? (
           <SearchEmptyState
             searchQuery={searchQuery}
-            selectedSourceName={selectedSourceName}
+            selectedSourceName={selectedSourceName || selectedFolderName}
             onClear={onClearSearch}
           />
         ) : items.map((item) => (
@@ -1664,25 +2082,51 @@ function Timeline({
 
 function SourceSelect({
   sources,
+  folders,
   selectedSourceId,
+  selectedFolderId,
   onSelectSource,
+  onSelectFolder,
 }: {
   sources: SourceItem[];
+  folders: SourceFolder[];
   selectedSourceId: string;
+  selectedFolderId: string;
   onSelectSource: (sourceId: string) => void;
+  onSelectFolder: (folderId: string) => void;
 }) {
+  const selectedValue = selectedSourceId
+    ? `source:${selectedSourceId}`
+    : selectedFolderId
+      ? `folder:${selectedFolderId}`
+      : "";
+
   return (
     <label className="hidden h-9 items-center gap-2 border border-[#cbd0d8] bg-white px-2 text-[#6a7078] max-md:flex">
       <Rss size={16} />
       <select
-        value={selectedSourceId}
-        onChange={(event) => onSelectSource(event.target.value)}
+        value={selectedValue}
+        onChange={(event) => {
+          const value = event.target.value;
+
+          if (value.startsWith("folder:")) {
+            onSelectFolder(value.replace("folder:", ""));
+            return;
+          }
+
+          onSelectSource(value.replace("source:", ""));
+        }}
         aria-label="Filter by source"
         className="min-w-0 flex-1 bg-transparent text-[13px] font-bold text-[#303843] outline-none"
       >
         <option value="">All Sources</option>
+        {folders.map((folder) => (
+          <option key={folder.id} value={`folder:${folder.id}`}>
+            {folder.name}
+          </option>
+        ))}
         {sources.map((source) => (
-          <option key={source.id} value={source.id}>
+          <option key={source.id} value={`source:${source.id}`}>
             {source.name}
           </option>
         ))}
@@ -1767,6 +2211,45 @@ function SearchEmptyState({
   );
 }
 
+function IconTooltipButton({
+  label,
+  children,
+  onClick,
+  disabled = false,
+  variant = "ghost",
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  variant?: "ghost" | "primary" | "active";
+  className?: string;
+}) {
+  const variantClass =
+    variant === "primary"
+      ? "bg-[#34495f] text-white hover:bg-[#2b3c50]"
+      : variant === "active"
+        ? "bg-[#34495f] text-white shadow-sm"
+        : "border border-[#c9ced6] bg-[#f6f4f5] text-[#2f3540] hover:bg-white";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={`group relative flex h-10 w-10 items-center justify-center rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${variantClass} ${className}`}
+    >
+      {children}
+      <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 function DetailPanel({
   item,
   actionError,
@@ -1794,6 +2277,17 @@ function DetailPanel({
   onCopyLink: () => void;
   onGenerateSummary: () => void;
 }) {
+  const copyLabel = isCopied ? "Copied" : "Copy Link";
+  const favoriteLabel = item.favorite ? "Remove favorite" : "Favorite";
+  const readLabel = item.read ? "Mark Unread" : "Mark Read";
+  const summaryLabel = item.aiSummary
+    ? isSummarizing
+      ? "Regenerating"
+      : "Regenerate"
+    : isSummarizing
+      ? "Generating"
+      : "Generate Summary";
+
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-[#fbfafb]">
       <header className="flex min-h-[72px] shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[#d4d8de] px-5 py-3">
@@ -1803,44 +2297,27 @@ function DetailPanel({
           <span className="shrink-0 text-[#59616b]">{item.time}</span>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onOpenOriginal}
-            className="flex h-9 items-center gap-2 border border-[#c9ced6] bg-[#f6f4f5] px-4 text-[15px] font-semibold text-[#2f3540] transition hover:bg-white"
-          >
+          <IconTooltipButton label="Open Original" onClick={onOpenOriginal}>
             <ExternalLink size={18} />
-            Open Original
-          </button>
-          <button
-            type="button"
-            onClick={onCopyLink}
-            className="flex h-9 items-center gap-2 border border-[#c9ced6] bg-[#f6f4f5] px-4 text-[15px] font-semibold text-[#2f3540] transition hover:bg-white"
-          >
+          </IconTooltipButton>
+          <IconTooltipButton label={copyLabel} onClick={onCopyLink}>
             {isCopied ? <Check size={18} /> : <Copy size={18} />}
-            {isCopied ? "Copied" : "Copy Link"}
-          </button>
-          <button
-            type="button"
+          </IconTooltipButton>
+          <IconTooltipButton
+            label={favoriteLabel}
             onClick={onToggleFavorite}
             disabled={isBusy}
-            aria-label={item.favorite ? "Remove favorite" : "Favorite"}
-            className={`flex h-10 w-10 items-center justify-center rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${
-              item.favorite
-                ? "bg-[#34495f] text-white"
-                : "bg-[#eef0f3] text-[#34495f] hover:bg-white"
-            }`}
+            variant={item.favorite ? "active" : "ghost"}
           >
             <Star size={22} fill={item.favorite ? "currentColor" : "none"} />
-          </button>
-          <button
-            type="button"
+          </IconTooltipButton>
+          <IconTooltipButton
+            label={readLabel}
             onClick={onToggleRead}
             disabled={isBusy}
-            className="flex h-9 items-center gap-2 border border-[#c9ced6] bg-[#f6f4f5] px-4 text-[15px] font-semibold text-[#2f3540] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Check size={18} />
-            {item.read ? "Mark Unread" : "Mark Read"}
-          </button>
+          </IconTooltipButton>
         </div>
       </header>
 
@@ -1876,25 +2353,18 @@ function DetailPanel({
                   AI Summary
                 </h3>
               </div>
-              <button
-                type="button"
+              <IconTooltipButton
+                label={summaryLabel}
                 onClick={onGenerateSummary}
                 disabled={isSummarizing || !aiConfig.configured}
-                className="inline-flex h-10 items-center gap-2 rounded-sm bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50] disabled:cursor-not-allowed disabled:opacity-55"
+                variant="primary"
               >
                 {isSummarizing ? (
                   <RefreshCcw size={16} className="animate-spin" />
                 ) : (
                   <Sparkles size={16} />
                 )}
-                {item.aiSummary
-                  ? isSummarizing
-                    ? "Regenerating"
-                    : "Regenerate"
-                  : isSummarizing
-                    ? "Generating"
-                    : "Generate Summary"}
-              </button>
+              </IconTooltipButton>
             </div>
 
             {!aiConfig.configured ? (
@@ -2076,9 +2546,14 @@ function VideoPlayer({
           <button
             type="button"
             onClick={stopEmbeddedPlayback}
-            className="absolute right-3 top-3 z-20 bg-white/95 px-3 py-2 text-xs font-bold text-[#263241] shadow"
+            title="Show Cover"
+            aria-label="Show Cover"
+            className="group absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-sm bg-white/95 text-[#263241] shadow transition hover:bg-white"
           >
-            Show Cover
+            <EyeOff size={18} />
+            <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+              Show Cover
+            </span>
           </button>
           {playerStatus === "blocked" ? (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#282828] px-5 pt-12 text-[#eeeeee] xl:px-8 xl:pt-14">
@@ -2188,33 +2663,26 @@ function VideoActions({
   return (
     <div className="mt-4 flex flex-wrap gap-3">
       {canEmbed ? (
-        <button
-          type="button"
+        <IconTooltipButton
+          label={embedLabel}
           onClick={onPlay}
           disabled={status === "loading" || status === "playing"}
-          className="inline-flex h-10 items-center gap-2 bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50] disabled:cursor-not-allowed disabled:opacity-60"
+          variant="primary"
         >
           <Video size={16} fill="currentColor" />
-          {embedLabel}
-        </button>
+        </IconTooltipButton>
       ) : (
-        <button
-          type="button"
+        <IconTooltipButton
+          label={externalPlayLabel}
           onClick={onOpenOriginal}
-          className="inline-flex h-10 items-center gap-2 bg-[#34495f] px-4 text-[14px] font-semibold text-white transition hover:bg-[#2b3c50]"
+          variant="primary"
         >
           <Video size={16} fill="currentColor" />
-          {externalPlayLabel}
-        </button>
+        </IconTooltipButton>
       )}
-      <button
-        type="button"
-        onClick={onOpenOriginal}
-        className="inline-flex h-10 items-center gap-2 border border-[#c9ced6] bg-white px-4 text-[14px] font-semibold text-[#2f3540] transition hover:bg-[#f6f4f5]"
-      >
+      <IconTooltipButton label="Open Video Page" onClick={onOpenOriginal}>
         <ExternalLink size={16} />
-        Open Video Page
-      </button>
+      </IconTooltipButton>
     </div>
   );
 }
@@ -2313,7 +2781,7 @@ function SettingsView({
   subscriptions: ApiSubscription[];
   onUpdateSubscription: (
     subscriptionId: string,
-    patch: Pick<Partial<ApiSubscription>, "title" | "status">,
+    patch: Pick<Partial<ApiSubscription>, "title" | "status" | "folderId">,
   ) => void;
   onDeleteSubscription: (subscriptionId: string) => void;
   onImportComplete: () => Promise<void>;
@@ -2826,6 +3294,243 @@ function TopActions() {
       <button type="button" aria-label="More actions">
         <MoreVertical size={22} />
       </button>
+    </div>
+  );
+}
+
+function SourceFolderModal({
+  folders,
+  subscriptions,
+  onClose,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onAssignSubscription,
+}: {
+  folders: SourceFolder[];
+  subscriptions: ApiSubscription[];
+  onClose: () => void;
+  onCreateFolder: (name: string) => Promise<string>;
+  onRenameFolder: (folderId: string, name: string) => Promise<void>;
+  onDeleteFolder: (folderId: string) => Promise<void>;
+  onAssignSubscription: (
+    subscriptionId: string,
+    folderId: string | null,
+  ) => Promise<void>;
+}) {
+  const [selectedFolderId, setSelectedFolderId] = useState(
+    folders[0]?.id || "uncategorized",
+  );
+  const [newFolderName, setNewFolderName] = useState("");
+  const selectedFolder = folders.find((folder) => folder.id === selectedFolderId);
+  const [renameDraft, setRenameDraft] = useState(selectedFolder?.name || "");
+  const isUncategorizedSelected = selectedFolderId === "uncategorized";
+
+  function getDefaultFolderName() {
+    const baseName = "New Folder";
+    const existingNames = new Set(folders.map((folder) => folder.name));
+
+    if (!existingNames.has(baseName)) {
+      return baseName;
+    }
+
+    for (let index = 2; index < 100; index += 1) {
+      const candidate = `${baseName} ${index}`;
+
+      if (!existingNames.has(candidate)) {
+        return candidate;
+      }
+    }
+
+    return `${baseName} ${folders.length + 1}`;
+  }
+
+  async function handleCreate() {
+    const folderName = newFolderName.trim() || getDefaultFolderName();
+    const folderId = await onCreateFolder(folderName);
+
+    if (folderId) {
+      setSelectedFolderId(folderId);
+      setRenameDraft(folderName);
+      setNewFolderName("");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/35 px-4">
+      <section className="w-[780px] max-w-full overflow-hidden rounded-md border border-[#cbd0d8] bg-white shadow-2xl">
+        <header className="flex items-start justify-between gap-4 border-b border-[#d8dce3] bg-[#f7f8f9] px-6 py-5">
+          <div>
+            <h2 className="text-[23px] font-bold text-[#263241]">
+              Source Folders
+            </h2>
+            <p className="mt-1 text-sm font-semibold text-[#69717d]">
+              Create folders and assign each source to one category.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close source folders"
+            className="text-[#606873] transition hover:text-[#1f2630]"
+          >
+            <X size={20} />
+          </button>
+        </header>
+
+        <div className="grid max-h-[70vh] grid-cols-[250px_1fr] overflow-hidden max-md:grid-cols-1">
+          <aside className="border-r border-[#d8dce3] bg-[#fbfafb] p-5 max-md:border-b max-md:border-r-0">
+            <div className="flex gap-2">
+              <input
+                value={newFolderName}
+                onChange={(event) => setNewFolderName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleCreate();
+                  }
+                }}
+                placeholder="New folder"
+                className="h-10 min-w-0 flex-1 border border-[#cbd0d8] bg-white px-3 text-sm font-semibold text-[#263241] outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void handleCreate()}
+                aria-label="Create folder"
+                title="Create folder"
+                className="flex h-10 w-10 items-center justify-center bg-[#4b5b70] text-white transition hover:bg-[#3f4d60]"
+              >
+                <Plus size={17} />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-1">
+              {folders.map((folder) => (
+                <button
+                  type="button"
+                  key={folder.id}
+                  onClick={() => {
+                    setSelectedFolderId(folder.id);
+                    setRenameDraft(folder.name);
+                  }}
+                  className={`flex h-10 w-full items-center gap-2 rounded-sm px-3 text-left text-sm font-bold transition ${
+                    selectedFolderId === folder.id
+                      ? "bg-[#eceff3] text-[#263241]"
+                      : "text-[#555d68] hover:bg-[#f0f2f5]"
+                  }`}
+                >
+                  <Folder size={16} />
+                  <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                  <span className="text-xs text-[#77808b]">
+                    {folder.subscriptionCount}
+                  </span>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFolderId("uncategorized");
+                  setRenameDraft("");
+                }}
+                className={`flex h-10 w-full items-center gap-2 rounded-sm px-3 text-left text-sm font-bold transition ${
+                  isUncategorizedSelected
+                    ? "bg-[#eceff3] text-[#263241]"
+                    : "text-[#555d68] hover:bg-[#f0f2f5]"
+                }`}
+              >
+                <FolderOpen size={16} />
+                <span className="min-w-0 flex-1 truncate">Uncategorized</span>
+              </button>
+            </div>
+          </aside>
+
+          <div className="min-h-0 overflow-y-auto p-6">
+            {selectedFolder ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-1 gap-3">
+                  <input
+                    value={renameDraft}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    className="h-11 min-w-0 flex-1 border border-[#cbd0d8] bg-white px-4 text-[16px] font-bold text-[#263241] outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void onRenameFolder(selectedFolder.id, renameDraft)
+                    }
+                    disabled={renameDraft.trim() === selectedFolder.name}
+                    className="flex h-11 items-center gap-2 bg-[#4b5b70] px-4 text-sm font-semibold text-white transition hover:bg-[#3f4d60] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Pencil size={15} />
+                    Rename
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`Delete folder "${selectedFolder.name}"?`)) {
+                      void onDeleteFolder(selectedFolder.id);
+                    }
+                  }}
+                  className="flex h-11 items-center gap-2 border border-red-200 bg-red-50 px-4 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+                >
+                  <Trash2 size={15} />
+                  Delete
+                </button>
+              </div>
+            ) : (
+              <div className="text-[16px] font-bold text-[#263241]">
+                Uncategorized
+              </div>
+            )}
+
+            <div className="mt-5 border border-[#d7dbe2]">
+              {subscriptions.map((subscription) => {
+                const isAssigned = selectedFolder
+                  ? subscription.folderId === selectedFolder.id
+                  : !subscription.folderId;
+
+                return (
+                  <label
+                    key={subscription.id}
+                    className="flex cursor-pointer items-center gap-3 border-b border-[#e5e8ed] bg-white px-4 py-3 last:border-b-0 hover:bg-[#f8f9fa]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isAssigned}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        const nextFolderId = checked
+                          ? selectedFolder?.id ?? null
+                          : null;
+
+                        void onAssignSubscription(subscription.id, nextFolderId);
+                      }}
+                      className="h-4 w-4 accent-[#4b5b70]"
+                    />
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold ${getSourceColor(
+                        subscription.sourceType,
+                      )}`}
+                    >
+                      {subscription.title.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-bold text-[#2d333b]">
+                        {subscription.title}
+                      </span>
+                      <span className="mt-0.5 block text-xs font-bold text-[#79818b]">
+                        {folders.find((folder) => folder.id === subscription.folderId)
+                          ?.name || "Uncategorized"}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

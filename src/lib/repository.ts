@@ -53,6 +53,7 @@ export async function listSubscriptions() {
   return prisma.subscription.findMany({
     orderBy: { createdAt: "asc" },
     include: {
+      folder: true,
       _count: {
         select: { items: true },
       },
@@ -60,14 +61,104 @@ export async function listSubscriptions() {
   });
 }
 
-export async function listItems() {
+export async function listItems(input?: { folderId?: string }) {
   return prisma.contentItem.findMany({
+    where: input?.folderId
+      ? {
+          subscription: {
+            folderId: input.folderId,
+          },
+        }
+      : undefined,
     orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
     include: {
       subscription: true,
       state: true,
       aiSummary: true,
     },
+  });
+}
+
+export async function listSourceFolders() {
+  const folders = await prisma.sourceFolder.findMany({
+    orderBy: { createdAt: "asc" },
+    include: {
+      subscriptions: {
+        include: {
+          items: {
+            select: {
+              state: {
+                select: {
+                  isRead: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+
+  return folders.map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+    createdAt: folder.createdAt,
+    updatedAt: folder.updatedAt,
+    subscriptionCount: folder.subscriptions.length,
+    unreadCount: folder.subscriptions.reduce(
+      (count, subscription) =>
+        count +
+        subscription.items.filter((item) => item.state?.isRead !== true).length,
+      0,
+    ),
+    subscriptionIds: folder.subscriptions.map((subscription) => subscription.id),
+  }));
+}
+
+export async function createSourceFolder(name: string) {
+  const trimmedName = name.trim();
+
+  if (!trimmedName) {
+    throw new Error("文件夹名称不能为空。");
+  }
+
+  return prisma.sourceFolder.create({
+    data: { name: trimmedName },
+  });
+}
+
+export async function updateSourceFolder(folderId: string, input: { name?: string }) {
+  const data: Prisma.SourceFolderUpdateInput = {};
+
+  if (typeof input.name === "string") {
+    const name = input.name.trim();
+
+    if (!name) {
+      throw new Error("文件夹名称不能为空。");
+    }
+
+    data.name = name;
+  }
+
+  if (Object.keys(data).length === 0) {
+    throw new Error("没有可更新的字段。");
+  }
+
+  return prisma.sourceFolder.update({
+    where: { id: folderId },
+    data,
+  });
+}
+
+export async function deleteSourceFolder(folderId: string) {
+  await prisma.subscription.updateMany({
+    where: { folderId },
+    data: { folderId: null },
+  });
+
+  return prisma.sourceFolder.delete({
+    where: { id: folderId },
   });
 }
 
@@ -126,6 +217,7 @@ export async function updateSubscription(
   input: {
     title?: string;
     status?: string;
+    folderId?: string | null;
   },
 ) {
   const data: Prisma.SubscriptionUpdateInput = {};
@@ -151,6 +243,23 @@ export async function updateSubscription(
     }
   }
 
+  if ("folderId" in input) {
+    if (input.folderId) {
+      const folder = await prisma.sourceFolder.findUnique({
+        where: { id: input.folderId },
+        select: { id: true },
+      });
+
+      if (!folder) {
+        throw new Error("文件夹不存在。");
+      }
+
+      data.folder = { connect: { id: input.folderId } };
+    } else {
+      data.folder = { disconnect: true };
+    }
+  }
+
   if (Object.keys(data).length === 0) {
     throw new Error("没有可更新的字段。");
   }
@@ -158,7 +267,10 @@ export async function updateSubscription(
   return prisma.subscription.update({
     where: { id: subscriptionId },
     data,
-    include: { _count: { select: { items: true } } },
+    include: {
+      folder: true,
+      _count: { select: { items: true } },
+    },
   });
 }
 
