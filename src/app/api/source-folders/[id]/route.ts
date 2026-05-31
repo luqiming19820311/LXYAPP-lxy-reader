@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  deleteSubscription,
-  updateSubscription,
+  deleteSourceFolder,
+  updateSourceFolder,
 } from "@/lib/repository";
 
 export async function PATCH(
@@ -10,15 +10,11 @@ export async function PATCH(
 ) {
   try {
     const { id } = await context.params;
-    const body = (await request.json()) as {
-      title?: string;
-      status?: string;
-      folderId?: string | null;
-    };
-    const subscription = await updateSubscription(id, body);
-    return NextResponse.json({ subscription });
+    const body = (await request.json()) as { name?: string };
+    const folder = await updateSourceFolder(id, body);
+    return NextResponse.json({ folder });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "更新订阅源失败。";
+    const message = error instanceof Error ? error.message : "更新文件夹失败。";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
@@ -29,10 +25,10 @@ export async function DELETE(
 ) {
   try {
     const { id } = await context.params;
-    await deleteSubscription(id);
+    await deleteSourceFolder(id);
     return NextResponse.json({ ok: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "删除订阅源失败。";
+    const message = error instanceof Error ? error.message : "删除文件夹失败。";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

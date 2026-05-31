@@ -1,5 +1,12 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS "SourceFolder" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS "Subscription" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "title" TEXT NOT NULL,
@@ -13,8 +20,14 @@ CREATE TABLE IF NOT EXISTS "Subscription" (
   "status" TEXT NOT NULL DEFAULT 'active',
   "lastError" TEXT,
   "lastFetchedAt" DATETIME,
+  "folderId" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "Subscription_folderId_fkey"
+    FOREIGN KEY ("folderId")
+    REFERENCES "SourceFolder" ("id")
+    ON DELETE SET NULL
+    ON UPDATE CASCADE
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS "Subscription_inputUrl_key"
@@ -22,6 +35,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "Subscription_inputUrl_key"
 
 CREATE UNIQUE INDEX IF NOT EXISTS "Subscription_feedUrl_key"
   ON "Subscription"("feedUrl");
+
+CREATE INDEX IF NOT EXISTS "Subscription_folderId_idx"
+  ON "Subscription"("folderId");
 
 CREATE TABLE IF NOT EXISTS "ContentItem" (
   "id" TEXT NOT NULL PRIMARY KEY,
