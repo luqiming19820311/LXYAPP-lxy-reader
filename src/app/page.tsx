@@ -36,7 +36,7 @@ import {
   Video,
   X,
 } from "lucide-react";
-import type { ReactNode, SyntheticEvent } from "react";
+import type { PointerEvent, ReactNode, SyntheticEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatOpmlImportMessage } from "@/lib/opml-import-message";
 import { getPreviewEmptyMessage } from "@/lib/preview-display";
@@ -49,6 +49,11 @@ import {
 
 type View = "all" | "videos" | "articles" | "favorites" | "readLater" | "settings";
 type ItemType = "Video" | "Article" | "Update";
+
+const SIDEBAR_WIDTH_STORAGE_KEY = "lxy-sidebar-width";
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const MIN_SIDEBAR_WIDTH = 212;
+const MAX_SIDEBAR_WIDTH = 360;
 
 type FeedItem = {
   id: string;
@@ -355,6 +360,10 @@ function formatCompactCount(value: number) {
   return value > 99 ? "99+" : `${value}`;
 }
 
+function clampSidebarWidth(width: number) {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
+}
+
 function filterItemsByView(items: FeedItem[], view: View) {
   if (view === "videos") {
     return items.filter((item) => item.type === "Video");
@@ -593,6 +602,7 @@ export default function Home() {
   });
   const [themePreference, setThemePreference] =
     useState<ThemePreference>("system");
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [subscriptionInput, setSubscriptionInput] = useState(
     "rsshub://youtube/user/%40xiao_lin_shuo",
   );
@@ -656,6 +666,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const savedValue = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const savedWidth = savedValue === null ? NaN : Number(savedValue);
+
+    if (Number.isFinite(savedWidth)) {
+      setSidebarWidth(clampSidebarWidth(savedWidth));
+    }
+  }, []);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
     function applyTheme(preference: ThemePreference) {
@@ -696,6 +715,18 @@ export default function Home() {
     window.localStorage.setItem(THEME_STORAGE_KEY, preference);
     document.documentElement.dataset.theme = effectiveTheme;
     document.documentElement.dataset.themePreference = preference;
+  }
+
+  function handleSidebarWidthChange(width: number, persist = false) {
+    const nextWidth = clampSidebarWidth(width);
+
+    setSidebarWidth(nextWidth);
+    if (persist) {
+      window.localStorage.setItem(
+        SIDEBAR_WIDTH_STORAGE_KEY,
+        String(nextWidth),
+      );
+    }
   }
 
   const sources = useMemo(
@@ -1284,6 +1315,7 @@ export default function Home() {
   return (
     <main className="flex h-screen min-w-0 overflow-hidden bg-[#fbfafb] text-[#1f2630]">
       <Sidebar
+        width={sidebarWidth}
         activeView={activeView}
         sources={sources}
         folders={sourceFolders}
@@ -1318,15 +1350,17 @@ export default function Home() {
           }
         }}
         onSelectFolder={(folderId) => {
+          const nextView = activeView === "settings" ? "all" : activeView;
           const folderSourceIds =
             sourceFolders.find((folder) => folder.id === folderId)
               ?.subscriptionIds ?? [];
 
+          setActiveView(nextView);
           setSelectedFolderId(folderId);
           setSelectedSourceId("");
           const nextItem = getVisibleItems(
             items,
-            activeView,
+            nextView,
             searchQuery,
             "",
             folderSourceIds,
@@ -1334,22 +1368,28 @@ export default function Home() {
           setSelectedId(nextItem || "");
         }}
         onSelectSource={(sourceId) => {
+          const nextView = activeView === "settings" ? "all" : activeView;
+
+          setActiveView(nextView);
           setSelectedSourceId(sourceId);
           setSelectedFolderId("");
           const nextItem = getVisibleItems(
             items,
-            activeView,
+            nextView,
             searchQuery,
             sourceId,
           )[0]?.id;
           setSelectedId(nextItem || "");
         }}
         onClearSource={() => {
+          const nextView = activeView === "settings" ? "all" : activeView;
+
+          setActiveView(nextView);
           setSelectedSourceId("");
           setSelectedFolderId("");
           const nextItem = getVisibleItems(
             items,
-            activeView,
+            nextView,
             searchQuery,
             "",
           )[0]?.id;
@@ -1358,6 +1398,7 @@ export default function Home() {
         onAddSubscription={() => setShowAddModal(true)}
         onManageFolders={() => setShowFolderModal(true)}
         onRefreshFeeds={handleRefreshFeeds}
+        onWidthChange={handleSidebarWidthChange}
         isRefreshing={isRefreshing}
       />
 
@@ -1630,6 +1671,7 @@ function DataErrorState({
 }
 
 function Sidebar({
+  width,
   activeView,
   sources,
   folders,
@@ -1643,8 +1685,10 @@ function Sidebar({
   onAddSubscription,
   onManageFolders,
   onRefreshFeeds,
+  onWidthChange,
   isRefreshing,
 }: {
+  width: number;
   activeView: View;
   sources: SourceItem[];
   folders: SourceFolder[];
@@ -1658,11 +1702,14 @@ function Sidebar({
   onAddSubscription: () => void;
   onManageFolders: () => void;
   onRefreshFeeds: () => void;
+  onWidthChange: (width: number, persist?: boolean) => void;
   isRefreshing: boolean;
 }) {
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
     () => new Set(["uncategorized"]),
   );
+  const [isResizing, setIsResizing] = useState(false);
+  const sidebarRef = useRef<HTMLElement | null>(null);
   const folderGroups = folders.map((folder) => ({
     ...folder,
     sources: sources.filter((source) => source.folderId === folder.id),
@@ -1694,8 +1741,66 @@ function Sidebar({
     setFolderExpanded(folderId, !expandedFolderIds.has(folderId));
   }
 
+  function getWidthFromPointer(clientX: number) {
+    const left = sidebarRef.current?.getBoundingClientRect().left ?? 0;
+
+    return clampSidebarWidth(clientX - left);
+  }
+
+  function handleResizePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const target = event.currentTarget;
+    setIsResizing(true);
+    onWidthChange(getWidthFromPointer(event.clientX));
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function handleWindowPointerMove(moveEvent: globalThis.PointerEvent) {
+      onWidthChange(getWidthFromPointer(moveEvent.clientX));
+    }
+
+    function handleWindowPointerEnd(endEvent: globalThis.PointerEvent) {
+      onWidthChange(getWidthFromPointer(endEvent.clientX), true);
+      setIsResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerEnd);
+      window.removeEventListener("pointercancel", handleWindowPointerEnd);
+
+      if (target.hasPointerCapture(endEvent.pointerId)) {
+        target.releasePointerCapture(endEvent.pointerId);
+      }
+    }
+
+    target.setPointerCapture(event.pointerId);
+    window.addEventListener("pointermove", handleWindowPointerMove);
+    window.addEventListener("pointerup", handleWindowPointerEnd);
+    window.addEventListener("pointercancel", handleWindowPointerEnd);
+  }
+
   return (
-    <aside className="flex h-screen w-[212px] shrink-0 flex-col overflow-hidden border-r border-[#d4d8de] bg-[#f7f5f6] max-md:hidden">
+    <aside
+      ref={sidebarRef}
+      className="relative flex h-screen shrink-0 flex-col overflow-hidden border-r border-[#d4d8de] bg-[#f7f5f6] max-md:hidden"
+      style={{ width }}
+    >
+      <button
+        type="button"
+        onPointerDown={handleResizePointerDown}
+        title="Resize sidebar"
+        aria-label="Resize sidebar"
+        className={`group absolute inset-y-0 right-0 z-20 w-2 cursor-col-resize touch-none transition ${
+          isResizing ? "bg-[#34495f]/10" : "hover:bg-[#34495f]/5"
+        }`}
+      >
+        <span
+          className={`absolute right-0 top-0 h-full w-px transition ${
+            isResizing ? "bg-[#34495f]" : "bg-transparent group-hover:bg-[#8894a3]"
+          }`}
+        />
+      </button>
       <div className="flex h-[102px] shrink-0 items-center justify-between gap-3 border-b border-[#d4d8de] px-5">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded bg-[#48576a] text-xl font-semibold text-white">

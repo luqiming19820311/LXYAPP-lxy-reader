@@ -1,210 +1,291 @@
 # LXY Reader Project Context
 
-## Current Snapshot
+更新日期: 2026-05-31  
+版本标记: V5.1 已准备提交  
+主工作区: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`  
+外层项目目录: `/Users/luqiming/Downloads/work/codex/LXYAPP`  
+本地预览: `http://localhost:3001/`  
+应用仓库: `https://github.com/luqiming19820311/LXYAPP-lxy-reader`  
+外层仓库: `https://github.com/luqiming19820311/LXYAPP`
 
-- Primary workspace: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`.
-- Runtime URL: `http://localhost:3001/`.
-- Framework: Next.js 16 App Router, React 19, Tailwind CSS 4, Prisma 6, SQLite.
-- Current branch state when this file was created: local `main` is ahead of `origin/main` by 4 commits.
-- Important merge note: earlier UI work was first merged in `/Users/luqiming/.codex/worktrees/a8b3/LXYAPP/lxy-reader`, then brought into this primary workspace via local fetch/merge.
-- Current local merge head: `f332d01 Merge remote-tracking branch 'codex-worktree/main' into codex-downloads-pre-ui-sync`.
-- Dev server has been restarted from this primary workspace after regenerating Prisma Client.
+## 快速恢复
 
-## Key Decisions
+```bash
+cd /Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader
+git status --short --branch
+npm run dev -- --port 3001
+```
 
-- Use `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader` as the main workspace going forward.
-- Keep data local with SQLite at `prisma/dev.db`; environment uses `DATABASE_URL="file:./dev.db"`.
-- Store app-local secrets and runtime settings in local settings files via `src/lib/local-settings.ts`, not in browser-visible state.
-- Keep feed ingestion server-side:
-  - YouTube uses direct YouTube RSS where possible.
-  - Bilibili has direct API fallback logic and optional Cookie support.
-  - RSSHub routes remain supported through normal URL and `rsshub://` inputs.
-- UI direction:
-  - Sidebar uses compact icon navigation with hover labels.
-  - Detail actions use icon-only buttons with hover labels.
-  - Settings uses large vertical cards inspired by the supplied reference image.
-- Theme preference is browser-local:
-  - `Light`, `Dark`, and `Follow the system`.
-  - Preference is stored in `localStorage` using `lxy-theme-preference`.
-  - Effective theme is applied through `document.documentElement.dataset.theme`.
-- Do not remove current `/Downloads/...` work:
-  - It contains read-later, AI settings, local settings, OPML tests, dark theme tests, and related changes that were preserved before merging previous UI work.
+如果新增 API route、Prisma schema 或前端交互没有生效，优先重启 dev server。当前开发端口固定使用 `3001`。
 
-## Completed Work
+## 关键决策
 
-### Feed And Subscription Core
+1. LXY 是本地优先的电脑端 AI RSS 信息聚合阅读器，v0.1 先以浏览器 Web 应用跑通个人使用闭环。
+2. 当前核心闭环是: 添加订阅源 -> 抓取内容 -> 标准化入库 -> 时间线展示 -> 详情阅读/播放 -> 已读/收藏/稍后读 -> 手动 AI 摘要。
+3. 技术栈固定为 Next.js 16 App Router、React 19、Tailwind CSS 4、TypeScript、Prisma 6、SQLite、`rss-parser`、`lucide-react`。
+4. 数据本地化保存在 SQLite `prisma/dev.db`；该文件目前被 Git 跟踪，会随运行、刷新、导入、阅读状态变化而改变，提交前要确认是否纳入版本。
+5. Prisma 继续固定在 6.x。当前环境中 `prisma db push` / `prisma migrate dev` 可能出现空的 schema engine 错误，因此 `prisma/init.sql` 是初始化 schema 的重要备份。
+6. YouTube 优先走官方 RSS，可从频道 URL / handle 解析 channel ID；播放使用 YouTube iframe，不再跨平台 fallback 到 Bilibili。
+7. Bilibili 优先使用本地 adapter，不依赖公共 RSSHub；遇到 Web WBI 风控时 fallback 到 APP archive 接口。
+8. RSSHub 仍支持普通 HTTP URL 和 `rsshub://` 输入，Base URL、access code、Bilibili Cookie 可在 Settings 中配置。
+9. 本机敏感配置统一通过 `src/lib/local-settings.ts` 写入 `.lxy-settings.json`；API 只返回 configured/missing，不返回 Key、Cookie、access code 明文。
+10. AI 摘要为手动触发，不做自动批量摘要；默认模型为 `gpt-5`，调用 OpenAI Responses API。
+11. UI 保持阅读器工具形态: 左侧紧凑图标导航，中间时间线，右侧详情/播放/摘要，Settings 为垂直卡片布局。
+12. 主题偏好为浏览器本地设置，支持 Light、Dark、Follow the system，存储 key 为 `lxy-theme-preference`。
+13. 左侧 Sidebar 宽度可拖拽，默认 `260px`，范围 `212px-360px`，存储 key 为 `lxy-sidebar-width`。
+14. 从 Settings 点击左侧 Sources 文件夹或博主，会自动回到 All Feeds 并应用对应筛选，避免停留在 Settings 无法跳转。
 
-- Subscription CRUD via `/api/subscriptions`.
-- Subscription preview and creation flow.
-- Refresh/fetch per subscription, selected source, selected folder, or all feeds.
-- Content items sorted by publish time and creation time.
-- Friendly error messages for common RSS/RSSHub/network/Bilibili failure modes.
-- OPML import/export support.
+## 已完成部分
 
-### Platforms And Parsing
+### Feed 与订阅核心
 
-- YouTube feed resolution from `rsshub://youtube/user/...` handles channel lookup and direct YouTube RSS.
-- Bilibili direct archive API support exists, including risk-control detection.
-- RSSHub base URL and access-code support are configurable through Settings.
-- Normalized item model includes title, author, URL, publish time, summary, content HTML, thumbnail, media type, platform, embed URL, and raw payload.
+1. 订阅源 CRUD: `/api/subscriptions`、`/api/subscriptions/[id]`。
+2. 订阅预览与确认添加: `/api/subscriptions/preview`。
+3. 单来源、文件夹、全部来源刷新: `/api/subscriptions/[id]/fetch`。
+4. 内容标准化入库，并按发布时间、创建时间排序。
+5. 友好错误提示覆盖 RSS/RSSHub/网络/Bilibili/Prisma 常见失败。
+6. OPML 导入导出: `/api/subscriptions/opml`。
+7. SourceFolder 分组模型与 API 已实现，删除文件夹会把订阅移回未分类。
 
-### Data Model
+### 平台与解析
 
-- `Subscription`
-  - Stores feed/source metadata, status, last fetch/error, optional folder.
-- `SourceFolder`
-  - Groups subscriptions; deleting a folder moves subscriptions back to uncategorized.
-- `ContentItem`
-  - Stores normalized feed items and media metadata.
-- `UserItemState`
-  - Tracks read/unread, favorite, and read-later state.
-- `AiSummary`
-  - Stores AI generated summary per item.
+1. 普通 RSS/Atom、RSSHub HTTP、`rsshub://` 均可预览和抓取。
+2. YouTube:
+   - 支持频道页、handle、RSSHub YouTube 路由转官方 RSS。
+   - 支持 Shorts/embed/live/watch URL 的 videoId 解析。
+   - iframe 参数包含 autoplay、playsinline、rel、enablejsapi、origin、widget_referrer。
+   - 监听 postMessage 播放状态，区分 loading/playing/blocked。
+3. Bilibili:
+   - 支持 `rsshub://bilibili/user/video/:mid` 转本地 `bilibili://user/video/:mid`。
+   - 优先 Web WBI archive API。
+   - 风控错误 `-352`、`-412`、`request was banned` 时 fallback 到 APP archive。
+   - 标准化 bvid、aid、标题、描述、封面、发布时间、作者、embedUrl。
 
-### UI
+### 数据模型与状态
 
-- Sidebar:
-  - Header keeps LXY logo/name and top-right `+` add button.
-  - Horizontal icon toolbar includes All Feeds, Videos, Articles, Favorites, Read Later.
-  - All Feeds/Videos/Articles/Favorites show compact unread counts.
-  - Settings icon sits next to Refresh in the sidebar footer.
-  - Hover labels are used for icon-only navigation.
-- Timeline:
-  - Supports All Feeds, Videos, Articles, Favorites, Read Later.
-  - Supports source and folder filtering.
-- Detail panel:
-  - Top actions are icon-only: Open Original, Copy Link, Favorite, Read Later, Mark Read/Unread.
-  - Video actions are icon-only: Play Embedded/Open Video Page.
-  - AI Summary generate/regenerate uses icon button.
-  - Show Cover uses icon button.
-- Settings:
-  - General, AI Configuration, Network, OPML, Sources are card-style sections.
-  - Theme Preference buttons are functional.
-  - Network preserves RSSHub Base URL, access-code status, Bilibili Cookie, refresh interval display, save/clear controls.
-  - Sources uses left source list + right detail panel with Rename, Enable/Disable, Delete.
+1. `Subscription`: 订阅源元数据、状态、抓取错误、可选 `folderId`。
+2. `SourceFolder`: 来源分组，保存分组名称与订阅关系。
+3. `ContentItem`: 标准化内容、媒体元数据、平台、embedUrl、raw payload。
+4. `UserItemState`: 已读、收藏、稍后读及对应时间。
+5. `AiSummary`: 每条内容的 AI 摘要、模型、promptVersion。
+6. 前端使用乐观更新和 `stateOverridesRef`，避免已读/收藏/稍后读状态短暂回弹。
 
-### Local Settings
+### UI 与交互
 
-- `src/lib/local-settings.ts` centralizes local settings persistence.
-- `src/lib/feed-settings.ts` manages RSSHub/Bilibili settings.
-- `src/lib/ai-settings.ts` manages OpenAI API key/model.
-- Public API responses never return plaintext secret values.
+1. 三栏主界面: 左侧导航与来源、中间时间线、右侧详情。
+2. 左侧导航:
+   - All Feeds、Videos、Articles、Favorites、Read Later。
+   - 图标导航带 hover label。
+   - Settings 和 Refresh 在底部。
+   - Sources 区域独立滚动。
+   - Sidebar 可拖拽宽度，刷新后保留。
+3. 来源筛选:
+   - 可按单来源筛选。
+   - 可按 SourceFolder 筛选。
+   - Settings 中点击来源或文件夹会跳回内容列表。
+4. 时间线:
+   - 支持搜索标题、摘要、来源、类型。
+   - 支持 All/Videos/Articles/Favorites/Read Later 过滤。
+   - 无结果和加载错误有独立状态。
+5. 详情页:
+   - Open Original、Copy Link、Favorite、Read Later、Mark Read/Unread 图标按钮。
+   - YouTube/Bilibili iframe 播放。
+   - 缺失封面时显示平台化占位。
+   - Content Context 展示正文上下文。
+   - AI Summary 手动生成/重新生成。
+6. Settings:
+   - General、AI Configuration、Network、OPML、Sources 卡片。
+   - 主题偏好可切换并持久化。
+   - AI Key/模型可保存和清除。
+   - RSSHub Base URL、access code、Bilibili Cookie 可配置。
+   - 订阅源可重命名、启用/停用、删除。
 
-### Tests And Verification
+### 验证结果
 
-- `npm run lint` passes after the merge.
-- Prisma Client had to be regenerated with `npm run db:generate` after merging `SourceFolder` model.
-- Browser verified after merge:
-  - current `/Downloads/...` app loads at `localhost:3001`.
-  - compact sidebar UI appears.
-  - detail action buttons are iconified.
-  - SourceFolder APIs load after Prisma Client regeneration.
+1. 最近执行 `npm run lint` 通过。
+2. 浏览器验证:
+   - Sidebar 默认宽度 `260px`。
+   - 拖拽宽度可达 `212px-360px`，刷新后保留。
+   - Settings 点击“小Lin说”跳到对应来源列表。
+   - Settings 点击“科学上网”跳到对应文件夹列表。
+3. 之前已验证:
+   - YouTube 小Lin说多条视频可嵌入播放。
+   - Bilibili 风控 fallback 到 APP archive 可返回视频列表。
+   - Read Later API 可置入和移出真实内容。
+   - AI 设置保存/清除假 Key 不泄露明文。
 
-## Important Files
+## 待办事项
 
-### App Shell And UI
+### 高优先级
 
-- `src/app/page.tsx`
-  - Main client UI and most page/component state.
-  - Contains Home, Sidebar, Timeline, DetailPanel, SettingsView, SourceFolderModal, AddSubscriptionModal, etc.
-  - Owns client-side view selection, selected item/source/folder, optimistic item state, modals, theme preference wiring.
+1. 推送 V5.1 后确认 GitHub:
+   - 应用仓库 `main` 有 V5.1 提交。
+   - 外层仓库 submodule 指针同步。
+   - `project-context.md` 已更新。
+2. 测试真实 OpenAI 摘要调用:
+   - 保存真实 OpenAI API Key。
+   - 对真实内容生成摘要。
+   - 刷新后确认 `AiSummary` 保留。
+   - 确认错误提示足够友好。
+3. 决定 `prisma/dev.db` 长期策略:
+   - 继续纳入 Git，保留真实样本和本地状态。
+   - 或改为只提交 schema/seed，减少运行状态噪音。
 
-- `src/app/globals.css`
-  - Tailwind import and global base styles.
-  - Contains dark theme overrides keyed by `html[data-theme="dark"]`.
+### 中优先级
 
-- `src/app/layout.tsx`
-  - Root layout and metadata.
+1. SourceFolder 相关自动化测试:
+   - 文件夹 CRUD。
+   - 文件夹筛选 item list。
+   - 删除文件夹后订阅回到未分类。
+2. Theme 测试:
+   - localStorage 偏好保存。
+   - system 模式跟随系统。
+   - dark mode 覆盖所有卡片、弹窗、时间线、按钮。
+3. OPML 导入增强:
+   - 导入后可选择是否自动刷新。
+   - 更完整处理重复、缺失 xmlUrl、异常 outline。
+4. Settings 抓取配置增强:
+   - RSSHub access code 独立清除按钮。
+   - Bilibili Cookie 使用说明和状态反馈。
+5. 全文搜索:
+   - 当前为前端过滤。
+   - 后续可考虑 SQLite FTS。
+
+### 后续版本
+
+1. Electron/Tauri 桌面包装。
+2. Profile 页面真实实现。
+3. 多端同步。
+4. 自动摘要和批量摘要。
+5. 视频播放源发现和缓存。
+6. 订阅源 favicon 抓取。
+7. 更细的失败重试与后台刷新策略。
+
+## 重要文件修改记录
+
+### 文档
+
+`project-context.md`
+
+- 本文件，作为新会话恢复上下文的主要入口。
+- V5.1 更新:
+  - 记录 YouTube、Bilibili、UI 布局、明暗主题、SourceFolder、Sidebar 拖拽。
+  - 更新当前关键决策、待办和架构。
+
+### 前端主界面
+
+`src/app/page.tsx`
+
+- 主 UI 和交互文件，包含 Home、Sidebar、Timeline、DetailPanel、SettingsView、SourceFolderModal、AddSubscriptionModal 等。
+- V5/V5.1 重点:
+  - 图标化 Sidebar 与详情页操作按钮。
+  - SourceFolder 筛选与管理。
+  - Read Later 真实视图和详情按钮。
+  - Settings 卡片化布局。
+  - 主题偏好 wiring。
+  - Sidebar 可拖拽宽度，localStorage 持久化。
+  - Settings 中点击来源/文件夹自动跳回内容列表。
+
+`src/app/globals.css`
+
+- Tailwind 引入和全局样式。
+- 包含 `html[data-theme="dark"]` 的深色主题覆盖。
+- 保留系统字体，避免 Google Fonts 网络依赖。
+
+`src/app/layout.tsx`
+
+- Root layout 和页面 metadata。
 
 ### API Routes
 
-- `src/app/api/items/route.ts`
-  - Lists items, optionally filtered by folder.
+```text
+src/app/api/items/route.ts
+src/app/api/items/[id]/read/route.ts
+src/app/api/items/[id]/unread/route.ts
+src/app/api/items/[id]/favorite/route.ts
+src/app/api/items/[id]/unfavorite/route.ts
+src/app/api/items/[id]/read-later/route.ts
+src/app/api/items/[id]/unread-later/route.ts
+src/app/api/items/[id]/summary/route.ts
+src/app/api/subscriptions/route.ts
+src/app/api/subscriptions/[id]/route.ts
+src/app/api/subscriptions/[id]/fetch/route.ts
+src/app/api/subscriptions/preview/route.ts
+src/app/api/subscriptions/opml/route.ts
+src/app/api/source-folders/route.ts
+src/app/api/source-folders/[id]/route.ts
+src/app/api/settings/feed/route.ts
+src/app/api/ai/config/route.ts
+```
 
-- `src/app/api/items/[id]/read/route.ts`
-- `src/app/api/items/[id]/unread/route.ts`
-- `src/app/api/items/[id]/favorite/route.ts`
-- `src/app/api/items/[id]/unfavorite/route.ts`
-- `src/app/api/items/[id]/read-later/route.ts`
-- `src/app/api/items/[id]/unread-later/route.ts`
-  - Mutate per-item user state.
+- Next 16 动态 route handler 使用 `{ params: Promise<{ id: string }> }` 或 `RouteContext<"...">`，读取时需要 `await context.params`。
 
-- `src/app/api/items/[id]/summary/route.ts`
-  - Generates AI summary for an item.
+### 核心库
 
-- `src/app/api/subscriptions/route.ts`
-- `src/app/api/subscriptions/[id]/route.ts`
-- `src/app/api/subscriptions/[id]/fetch/route.ts`
-- `src/app/api/subscriptions/preview/route.ts`
-- `src/app/api/subscriptions/opml/route.ts`
-  - Subscription CRUD, fetch, preview, and OPML.
+`src/lib/repository.ts`
 
-- `src/app/api/source-folders/route.ts`
-- `src/app/api/source-folders/[id]/route.ts`
-  - Source folder CRUD.
+- 数据访问层，负责订阅、内容、文件夹、用户状态、抓取入库、OPML 导入。
 
-- `src/app/api/settings/feed/route.ts`
-  - Public feed settings read/update.
+`src/lib/feed.ts`
 
-- `src/app/api/ai/config/route.ts`
-  - Public AI config read/update.
+- Feed 输入解析、RSSHub URL 构造、YouTube/Bilibili/RSS 抓取与标准化。
 
-### Server Libraries
+`src/lib/local-settings.ts`
 
-- `src/lib/repository.ts`
-  - Main database access layer.
-  - Subscription/item/folder/state/fetch/import operations.
+- 本机设置文件读写，避免不同设置模块互相覆盖。
 
-- `src/lib/feed.ts`
-  - Feed input resolution, RSSHub URL building, YouTube/Bilibili/RSS parsing, normalization.
+`src/lib/feed-settings.ts`
 
-- `src/lib/summary.ts`
-  - AI summary generation.
+- RSSHub Base URL、access code、Bilibili Cookie 的读取与保存。
 
-- `src/lib/opml.ts`
-  - OPML build/parse.
+`src/lib/ai-settings.ts`
 
-- `src/lib/opml-import-message.ts`
-  - OPML import result messaging.
+- OpenAI API Key 和默认摘要模型的读取与保存。
 
-- `src/lib/preview-display.ts`
-  - Preview empty/warning message helper.
+`src/lib/summary.ts`
 
-- `src/lib/theme-preference.ts`
-  - Theme preference normalization and effective-theme calculation.
+- 调用 OpenAI Responses API 并 upsert `AiSummary`。
 
-- `src/lib/prisma.ts`
-  - Prisma singleton.
+`src/lib/opml.ts`
 
-### Data And Config
+- OPML 构建和解析。
 
-- `prisma/schema.prisma`
-  - Source of truth for data model.
+`src/lib/theme-preference.ts`
 
-- `prisma/init.sql`
-  - SQLite initialization schema.
+- 主题偏好标准化和 effective theme 计算。
 
-- `prisma/dev.db`
-  - Local SQLite DB. It changes during runtime and after schema updates.
+### 数据与配置
 
-- `.env`
-  - Contains `DATABASE_URL` and default `RSSHUB_BASE_URL`.
+`prisma/schema.prisma`
 
-## Recent Merge History
+- Prisma 数据模型来源。
+- 当前包含 `Subscription`、`SourceFolder`、`ContentItem`、`UserItemState`、`AiSummary`。
 
-- `e482684`: V4 baseline from `origin/main`.
-- `bbc4d9e`: Preserved current `/Downloads/...` workspace changes before UI sync.
-- `06d76c0`: Prior UI merge from `.codex/worktrees/...`.
-- `f332d01`: Merged prior UI work into `/Downloads/...` main.
+`prisma/init.sql`
 
-Notes:
+- SQLite 初始化 schema。
+- 用来绕过当前环境里 Prisma schema engine 迁移不稳定的问题。
 
-- `prisma/dev.db` had a merge conflict because `/Downloads/...` had read-later columns while `.codex/worktrees/...` had SourceFolder schema.
-- Resolution preserved `/Downloads/...` DB as base and added SourceFolder table plus `Subscription.folderId`.
-- `prisma/schema.prisma` and `prisma/init.sql` now include both SourceFolder and read-later fields.
-- After merging schema changes, `npm run db:generate` was required so runtime Prisma Client knew about `sourceFolder` and `Subscription.folder`.
+`prisma/dev.db`
 
-## Architecture Overview
+- 本地 SQLite 数据库。
+- 当前被 Git 跟踪，可能包含真实抓取内容和用户状态。
+- 提交前需要确认是否接受运行状态进入版本。
+
+`.env`
+
+```env
+DATABASE_URL="file:./dev.db"
+RSSHUB_BASE_URL="https://rsshub.app"
+```
+
+`.lxy-settings.json`
+
+- 本机运行时设置文件。
+- 保存 RSSHub/Bilibili/OpenAI 相关设置。
+- 不应在 API 中返回明文敏感字段。
+
+## 整体架构思路
 
 ```mermaid
 flowchart LR
@@ -213,8 +294,8 @@ flowchart LR
   Repo --> Prisma["Prisma Client"]
   Prisma --> SQLite["SQLite\nprisma/dev.db"]
   Repo --> Feed["Feed Resolver/Parser\nsrc/lib/feed.ts"]
-  Feed --> YouTube["YouTube RSS"]
-  Feed --> Bilibili["Bilibili APIs"]
+  Feed --> YouTube["YouTube Official RSS"]
+  Feed --> Bilibili["Bilibili WBI / APP APIs"]
   Feed --> RSSHub["RSSHub / Generic RSS"]
   API --> Summary["AI Summary\nsrc/lib/summary.ts"]
   Summary --> LocalSettings["Local Settings\nsrc/lib/local-settings.ts"]
@@ -222,59 +303,46 @@ flowchart LR
   Settings --> LocalSettings
 ```
 
-## Key Runtime Flows
+### 运行流
 
-### Add Subscription
+1. Add Subscription:
+   - 用户输入 URL。
+   - preview route 解析输入并预览。
+   - confirm 创建或更新订阅。
+   - 初次抓取写入 `ContentItem`。
+   - 前端刷新订阅、内容、文件夹和配置。
+2. Refresh:
+   - 根据当前选择刷新单来源、文件夹或全部来源。
+   - inactive 来源跳过。
+   - repository 抓取并 upsert 内容。
+   - UI 显示 refresh report。
+3. Item State:
+   - 前端乐观更新 read/favorite/readLater。
+   - API 写入 `UserItemState`。
+   - 成功后用服务端响应校准。
+   - Favorites/Read Later 移除当前条目时自动选择下一条。
+4. Theme:
+   - Settings 选择 Light/Dark/System。
+   - localStorage 保存 `lxy-theme-preference`。
+   - `document.documentElement.dataset.theme` 驱动 CSS 覆盖。
+5. AI Summary:
+   - Settings 保存 Key 和模型。
+   - 详情页手动触发摘要。
+   - Route Handler 调用 `summary.ts`。
+   - 结果写入 `AiSummary` 并回显。
 
-1. User opens Add Subscription modal from sidebar `+`.
-2. Preview route resolves input and previews feed.
-3. Confirm creates or updates `Subscription`.
-4. Initial fetch writes `ContentItem` records.
-5. UI reloads subscriptions/items/folders/config.
+## 下次会话建议
 
-### Refresh Feeds
+1. 优先读取本文件。
+2. 检查两个仓库状态:
 
-1. Refresh action chooses selected source, selected folder, or all sources.
-2. Inactive subscriptions are skipped.
-3. Each selected subscription calls `/api/subscriptions/[id]/fetch`.
-4. Repository fetches normalized items and upserts new content.
-5. UI shows refresh report.
+```bash
+cd /Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader
+git status --short --branch
 
-### Item State
+cd /Users/luqiming/Downloads/work/codex/LXYAPP
+git status --short --branch
+```
 
-1. UI optimistically updates read/favorite/read-later.
-2. API route writes `UserItemState`.
-3. Confirmed response reconciles UI state.
-4. If current view is Favorites or Read Later and the item is removed, selection moves to next visible item.
-
-### Theme Preference
-
-1. SettingsView receives `themePreference` and `onThemePreferenceChange`.
-2. User selects Light/Dark/Follow the system.
-3. Preference is saved in `localStorage`.
-4. `html[data-theme]` updates to effective theme.
-5. `globals.css` applies dark overrides.
-
-## Known Caveats
-
-- Current `main` is ahead of `origin/main`; changes are local until pushed.
-- `prisma/dev.db` is tracked and changes with local runtime/schema state. Be careful when committing/pushing DB changes.
-- Dev server may need restart after Prisma schema/client changes.
-- If `localhost:3001` says port is in use but browser cannot load, check stale Node processes with:
-  - `lsof -nP -iTCP:3001 -sTCP:LISTEN`
-  - stop stale process before restarting.
-- There are two historically relevant workspaces:
-  - Primary now: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`
-  - Old sync source: `/Users/luqiming/.codex/worktrees/a8b3/LXYAPP/lxy-reader`
-
-## Recommended Next Steps
-
-- Decide whether to push local `main` ahead commits to remote.
-- Consider whether `prisma/dev.db` should remain tracked or be treated as local development state.
-- Add focused tests for:
-  - SourceFolder CRUD and folder-filtered item list.
-  - Read Later state transitions and Read Later view removal behavior.
-  - Theme preference persistence and system mode.
-  - OPML import edge cases.
-- Consider extracting large UI sections from `src/app/page.tsx` into smaller components once behavior stabilizes.
-- Review dark-mode CSS coverage across all panels and modals after more UI changes.
+3. 如需继续开发，先确认 `prisma/dev.db` 是否应该随功能提交。
+4. 如需验证 UI，打开 `http://localhost:3001/`，重点看 Sidebar 拖拽、Settings 来源跳转、明暗主题、YouTube/Bilibili 播放。
