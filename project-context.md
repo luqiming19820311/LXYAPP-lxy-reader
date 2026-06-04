@@ -1,7 +1,7 @@
 # LXY Reader Project Context
 
 更新日期: 2026-06-04  
-版本标记: V5.3 待提交/推送  
+版本标记: V5.3 已提交并推送  
 主工作区: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`  
 外层项目目录: `/Users/luqiming/Downloads/work/codex/LXYAPP`  
 本地预览: `http://localhost:3000/`  
@@ -136,10 +136,7 @@ npm run dev -- --port 3000
 
 ### 高优先级
 
-1. 推送 V5.3 后确认 GitHub:
-   - 应用仓库 `main` 有 V5.3 提交。
-   - 外层仓库如使用 submodule，需要同步指针。
-   - `project-context.md` 已更新到 V5.3。
+1. 如外层仓库使用 submodule，确认是否需要同步外层仓库指针。
 2. 测试真实 OpenAI 摘要调用:
    - 保存真实 OpenAI API Key。
    - 对真实内容生成摘要。
