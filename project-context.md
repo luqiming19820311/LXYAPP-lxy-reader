@@ -1,7 +1,7 @@
 # LXY Reader Project Context
 
-更新日期: 2026-05-31  
-版本标记: V5.1 已准备提交  
+更新日期: 2026-06-04  
+版本标记: V5.2 已准备提交  
 主工作区: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`  
 外层项目目录: `/Users/luqiming/Downloads/work/codex/LXYAPP`  
 本地预览: `http://localhost:3001/`  
@@ -34,6 +34,7 @@ npm run dev -- --port 3001
 12. 主题偏好为浏览器本地设置，支持 Light、Dark、Follow the system，存储 key 为 `lxy-theme-preference`。
 13. 左侧 Sidebar 宽度可拖拽，默认 `260px`，范围 `212px-360px`，存储 key 为 `lxy-sidebar-width`。
 14. 从 Settings 点击左侧 Sources 文件夹或博主，会自动回到 All Feeds 并应用对应筛选，避免停留在 Settings 无法跳转。
+15. Dark 模式采用全局 utility override 修正浅色设计系统残留；V5.2 重点增强未读标记、侧栏文件夹、管理按钮和详情页图标按钮的对比度。
 
 ## 已完成部分
 
@@ -79,6 +80,7 @@ npm run dev -- --port 3001
    - Settings 和 Refresh 在底部。
    - Sources 区域独立滚动。
    - Sidebar 可拖拽宽度，刷新后保留。
+   - Dark 模式下文件夹箭头、文件夹图标、文件夹名称、Add/Manage 按钮可读性已提亮。
 3. 来源筛选:
    - 可按单来源筛选。
    - 可按 SourceFolder 筛选。
@@ -87,8 +89,10 @@ npm run dev -- --port 3001
    - 支持搜索标题、摘要、来源、类型。
    - 支持 All/Videos/Articles/Favorites/Read Later 过滤。
    - 无结果和加载错误有独立状态。
+   - 未读圆点使用与来源在线状态一致的绿色 `#17bf7d`，Dark 模式下更醒目。
 5. 详情页:
    - Open Original、Copy Link、Favorite、Read Later、Mark Read/Unread 图标按钮。
+   - Dark 模式下详情操作按钮使用深色底、亮边框和亮图标，避免低对比度。
    - YouTube/Bilibili iframe 播放。
    - 缺失封面时显示平台化占位。
    - Content Context 展示正文上下文。
@@ -108,6 +112,9 @@ npm run dev -- --port 3001
    - 拖拽宽度可达 `212px-360px`，刷新后保留。
    - Settings 点击“小Lin说”跳到对应来源列表。
    - Settings 点击“科学上网”跳到对应文件夹列表。
+   - Dark 模式下时间线未读点和左侧在线点均为 `rgb(23, 191, 125)`。
+   - Dark 模式下侧栏文件夹/管理按钮提亮到 `rgb(216, 222, 232)`，管理按钮边框为 `rgb(127, 139, 155)`。
+   - Dark 模式下详情页 ghost 图标按钮为深色底 `rgb(32, 39, 51)`、亮边框 `rgb(127, 139, 155)`、亮图标 `rgb(216, 222, 232)`。
 3. 之前已验证:
    - YouTube 小Lin说多条视频可嵌入播放。
    - Bilibili 风控 fallback 到 APP archive 可返回视频列表。
@@ -118,8 +125,8 @@ npm run dev -- --port 3001
 
 ### 高优先级
 
-1. 推送 V5.1 后确认 GitHub:
-   - 应用仓库 `main` 有 V5.1 提交。
+1. 推送 V5.2 后确认 GitHub:
+   - 应用仓库 `main` 有 V5.2 提交。
    - 外层仓库 submodule 指针同步。
    - `project-context.md` 已更新。
 2. 测试真实 OpenAI 摘要调用:
@@ -168,6 +175,9 @@ npm run dev -- --port 3001
 `project-context.md`
 
 - 本文件，作为新会话恢复上下文的主要入口。
+- V5.2 更新:
+  - 记录 Dark 模式未读标记和若干图标对比度修复。
+  - 记录当前验证结果和待办状态。
 - V5.1 更新:
   - 记录 YouTube、Bilibili、UI 布局、明暗主题、SourceFolder、Sidebar 拖拽。
   - 更新当前关键决策、待办和架构。
@@ -185,12 +195,18 @@ npm run dev -- --port 3001
   - 主题偏好 wiring。
   - Sidebar 可拖拽宽度，localStorage 持久化。
   - Settings 中点击来源/文件夹自动跳回内容列表。
+- V5.2 重点:
+  - 时间线未读圆点从深蓝灰改为在线状态同款绿色 `#17bf7d`。
 
 `src/app/globals.css`
 
 - Tailwind 引入和全局样式。
 - 包含 `html[data-theme="dark"]` 的深色主题覆盖。
 - 保留系统字体，避免 Google Fonts 网络依赖。
+- V5.2 重点:
+  - 补齐 Dark 模式下 `text-[#34495f]`、`text-[#46566b]`、`text-[#4b5b70]`、`text-[#3f4650]` 等颜色 override。
+  - 提亮 `border-[#d3d7de]`、`border-[#c9ced6]`。
+  - 将 `bg-[#f6f4f5]` 在 Dark 模式映射为深色按钮底，修复详情页 ghost 图标按钮低对比度。
 
 `src/app/layout.tsx`
 

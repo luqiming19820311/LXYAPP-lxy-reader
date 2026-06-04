@@ -2230,7 +2230,7 @@ function Timeline({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-[14px] font-bold text-[#45505c]">
                 {!item.read ? (
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#34495f]" />
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#17bf7d]" />
                 ) : null}
                 <span className="min-w-0 truncate">{item.source}</span>
                 <span className="shrink-0 rounded bg-[#e3e2e4] px-2 py-0.5 text-xs text-[#555a62]">
