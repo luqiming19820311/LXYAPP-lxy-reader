@@ -321,3 +321,48 @@ test("fetchNormalizedItems converts Bilibili archives to playable video items", 
   );
   assert.equal(items[0].publishedAt?.toISOString(), "2025-11-24T10:40:00.000Z");
 });
+
+test("fetchNormalizedItems builds YouTube thumbnails from video ids when feeds omit media thumbnails", async () => {
+  globalThis.fetch = async (input) => {
+    assert.equal(
+      String(input),
+      "http://rsshub.local/youtube/channel/test-channel?format=json",
+    );
+
+    return new Response(
+      JSON.stringify({
+        title: "YouTube Test Feed",
+        link: "https://www.youtube.com/channel/test-channel",
+        items: [
+          {
+            title: "YouTube item without thumbnail",
+            link: "https://www.youtube.com/watch?v=abc123XYZ_0",
+            pubDate: "2026-05-31T05:31:04.000Z",
+            author: "Test Channel",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  };
+
+  const items = await fetchNormalizedItems(
+    "http://rsshub.local/youtube/channel/test-channel?format=json",
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(
+    items[0].thumbnailUrl,
+    "https://i.ytimg.com/vi/abc123XYZ_0/hqdefault.jpg",
+  );
+  assert.equal(items[0].mediaType, "video");
+  assert.equal(
+    items[0].embedUrl,
+    "https://www.youtube.com/embed/abc123XYZ_0",
+  );
+});

@@ -368,7 +368,8 @@ export function normalizeItem(
 ): NormalizedItem {
   const contentUrl = item.link || item.guid || "";
   const publishedAt = parseDate(item.isoDate || item.pubDate);
-  const thumbnailUrl = extractThumbnail(item);
+  const thumbnailUrl =
+    extractThumbnail(item) || buildFallbackThumbnailUrl(platform, contentUrl);
 
   return {
     externalId: item.guid || contentUrl || `${item.title}-${item.pubDate}`,
@@ -901,6 +902,15 @@ function extractThumbnail(item: ParsedItem) {
   );
 }
 
+function buildFallbackThumbnailUrl(platform: FeedPlatform, contentUrl: string) {
+  if (platform !== "youtube") {
+    return null;
+  }
+
+  const videoId = getYouTubeVideoId(contentUrl);
+  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null;
+}
+
 function buildEmbedUrl(platform: FeedPlatform, contentUrl: string) {
   if (platform === "youtube") {
     const videoId = getYouTubeVideoId(contentUrl);
@@ -916,6 +926,12 @@ function buildEmbedUrl(platform: FeedPlatform, contentUrl: string) {
 }
 
 function getYouTubeVideoId(url: string) {
+  const feedId = url.match(/^yt:video:([^?#/]+)$/)?.[1];
+
+  if (feedId) {
+    return feedId;
+  }
+
   try {
     const parsed = new URL(url);
 

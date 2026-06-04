@@ -476,6 +476,22 @@ function getPlayableEmbedUrl(item: FeedItem) {
   return "";
 }
 
+function getVideoCoverUrl(item: FeedItem) {
+  if (item.thumbnail) {
+    return item.thumbnail;
+  }
+
+  if (item.platform !== "youtube") {
+    return "";
+  }
+
+  const videoId =
+    getYouTubeVideoId(item.contentUrl) ||
+    (item.embedUrl ? getYouTubeVideoId(item.embedUrl) : "");
+
+  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : "";
+}
+
 function buildBilibiliEmbedUrl(bvid: string) {
   const url = new URL("https://player.bilibili.com/player.html");
   url.searchParams.set("bvid", bvid);
@@ -517,6 +533,12 @@ function getAutoplayEmbedUrl(embedUrl: string) {
 }
 
 function getYouTubeVideoId(value: string) {
+  const feedId = value.match(/^yt:video:([^?#/]+)$/)?.[1];
+
+  if (feedId) {
+    return feedId;
+  }
+
   try {
     const url = new URL(value);
 
@@ -1923,7 +1945,7 @@ function Sidebar({
                 <div
                   className={`flex min-h-9 w-full items-center gap-2 rounded-sm border px-2 py-2 text-left transition ${
                     isSelected
-                      ? "border-[#c9ced6] bg-white shadow-sm"
+                      ? "lxy-sidebar-selected-row"
                       : "border-transparent hover:bg-[#efedf0]"
                   }`}
                 >
@@ -1933,7 +1955,7 @@ function Sidebar({
                       toggleFolder(folder.id);
                     }}
                     aria-label={`${isExpanded ? "Collapse" : "Expand"} folder ${folder.name}`}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center text-[#4b5b70]"
+                    className="lxy-sidebar-row-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#4b5b70]"
                   >
                     {isExpanded ? (
                       <ChevronDown size={17} />
@@ -1950,15 +1972,21 @@ function Sidebar({
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"
                   >
                     {isExpanded ? (
-                      <FolderOpen size={17} className="shrink-0 text-[#4b5b70]" />
+                      <FolderOpen
+                        size={17}
+                        className="lxy-sidebar-row-icon shrink-0 text-[#4b5b70]"
+                      />
                     ) : (
-                      <Folder size={17} className="shrink-0 text-[#4b5b70]" />
+                      <Folder
+                        size={17}
+                        className="lxy-sidebar-row-icon shrink-0 text-[#4b5b70]"
+                      />
                     )}
-                    <span className="min-w-0 flex-1 truncate text-[14px] font-bold text-[#3f4650]">
+                    <span className="lxy-sidebar-row-text min-w-0 flex-1 truncate text-[14px] font-bold text-[#3f4650]">
                       {folder.name}
                     </span>
                     {folder.unreadCount ? (
-                      <span className="rounded bg-[#d9dde3] px-2 py-0.5 text-xs font-bold text-[#5e6671]">
+                      <span className="lxy-sidebar-count-badge rounded bg-[#d9dde3] px-2 py-0.5 text-xs font-bold text-[#5e6671]">
                         {folder.unreadCount}
                       </span>
                     ) : null}
@@ -2069,7 +2097,7 @@ function SourceButton({
       onClick={onSelect}
       className={`flex min-h-9 w-full items-center gap-3 rounded-sm border py-2 text-left transition ${
         isSelected
-          ? "border-[#c9ced6] bg-white shadow-sm"
+          ? "lxy-sidebar-selected-row"
           : "border-transparent hover:bg-[#efedf0]"
       } ${nested ? "px-1.5" : "px-2"}`}
     >
@@ -2078,12 +2106,12 @@ function SourceButton({
       >
         {source.initial}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
+      <span className="lxy-sidebar-row-text min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
         {source.name}
       </span>
       <SourceStatusDot status={source.status} />
       {source.unread ? (
-        <span className="rounded bg-[#e1e0e2] px-2 py-0.5 text-xs font-bold text-[#6a6870]">
+        <span className="lxy-sidebar-count-badge rounded bg-[#e1e0e2] px-2 py-0.5 text-xs font-bold text-[#6a6870]">
           {source.unread}
         </span>
       ) : null}
@@ -2258,19 +2286,14 @@ function Timeline({
               ) : null}
             </div>
 
-            {item.thumbnail || item.type === "Video" ? (
+            {getVideoCoverUrl(item) || item.type === "Video" ? (
               <div
-                className="relative mt-7 flex h-[78px] w-[78px] shrink-0 items-center justify-center overflow-hidden rounded-sm bg-[#d8d6d4] bg-cover bg-center text-[#34495f]"
-                style={
-                  item.thumbnail
-                    ? { backgroundImage: `url(${item.thumbnail})` }
-                    : undefined
+                className="relative mt-7 flex h-[78px] w-[78px] shrink-0 items-center justify-center overflow-hidden rounded-sm bg-[#d8d6d4] text-[#34495f]"
+                aria-label={
+                  getVideoCoverUrl(item) ? undefined : "Video without cover"
                 }
-                aria-label={item.thumbnail ? undefined : "Video without cover"}
               >
-                {!item.thumbnail ? (
-                  <PlatformPlaceholder item={item} compact />
-                ) : null}
+                <VideoCoverImage item={item} compact />
                 {item.duration ? (
                   <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-bold text-white">
                     {item.duration}
@@ -2655,6 +2678,38 @@ function ContentBlock({ item }: { item: FeedItem }) {
   );
 }
 
+function VideoCoverImage({
+  item,
+  compact = false,
+}: {
+  item: FeedItem;
+  compact?: boolean;
+}) {
+  const coverUrl = getVideoCoverUrl(item);
+  const [failedUrl, setFailedUrl] = useState("");
+  const hasCover = Boolean(coverUrl && coverUrl !== failedUrl);
+
+  return (
+    <>
+      {hasCover ? (
+        // Remote feed covers need referrerPolicy and come from many domains.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={coverUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          className="absolute inset-0 h-full w-full object-cover"
+          onError={() => setFailedUrl(coverUrl)}
+        />
+      ) : (
+        <PlatformPlaceholder item={item} compact={compact} cover={!compact} />
+      )}
+    </>
+  );
+}
+
 function VideoPlayer({
   item,
   onOpenOriginal,
@@ -2664,7 +2719,6 @@ function VideoPlayer({
 }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playerStatus, setPlayerStatus] = useState<VideoPlayerStatus>("idle");
-  const hasCover = Boolean(item.thumbnail);
   const playableEmbedUrl = getPlayableEmbedUrl(item);
   const playerId = `yt-player-${item.id}`;
 
@@ -2816,17 +2870,9 @@ function VideoPlayer({
   return (
     <>
       <div className="relative mt-9 aspect-video overflow-hidden rounded-md border border-[#cfd4dc] bg-[#d7d2cb]">
-        {hasCover ? (
-          <div
-            className="h-full w-full bg-cover bg-center"
-            style={{ backgroundImage: `url(${item.thumbnail})` }}
-            aria-hidden="true"
-          />
-        ) : (
-          <div className="relative h-full w-full bg-[#ece9e6] text-[#34495f]">
-            <PlatformPlaceholder item={item} cover />
-          </div>
-        )}
+        <div className="relative h-full w-full bg-[#ece9e6] text-[#34495f]">
+          <VideoCoverImage item={item} />
+        </div>
         <button
           type="button"
           onClick={() => {

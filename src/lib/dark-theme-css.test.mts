@@ -54,3 +54,30 @@ test("dark theme CSS overrides dark text colors used in reader content", async (
     );
   }
 });
+
+test("dark theme CSS keeps selected sidebar rows readable", async () => {
+  const css = await readFile("src/app/globals.css", "utf8");
+  const page = await readFile("src/app/page.tsx", "utf8");
+
+  for (const className of [
+    "lxy-sidebar-selected-row",
+    "lxy-sidebar-row-text",
+    "lxy-sidebar-row-icon",
+    "lxy-sidebar-count-badge",
+  ]) {
+    assert.match(page, new RegExp(className), `missing ${className} in sidebar`);
+    assert.match(
+      css,
+      new RegExp(`:root\\[data-theme="dark"\\][^{}]*\\.${className}`, "s"),
+      `missing dark override for ${className}`,
+    );
+  }
+
+  assert.doesNotMatch(
+    page,
+    /lxy-sidebar-selected-row[^"]*bg-white[^"]*shadow-sm/,
+    "selected sidebar rows should not mix dark override hooks with light utilities",
+  );
+  assert.match(css, /background-color: #111827 !important;/);
+  assert.match(css, /color: #f8fafc !important;/);
+});
