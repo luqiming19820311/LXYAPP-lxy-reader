@@ -1,10 +1,10 @@
 # LXY Reader Project Context
 
-更新日期: 2026-06-04  
-版本标记: V5.3 已提交并推送  
+更新日期: 2026-06-05  
+版本标记: V5.4 已提交并推送  
 主工作区: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`  
 外层项目目录: `/Users/luqiming/Downloads/work/codex/LXYAPP`  
-本地预览: `http://localhost:3000/`  
+本地预览: `http://localhost:3001/`  
 应用仓库: `https://github.com/luqiming19820311/LXYAPP-lxy-reader`  
 外层仓库: `https://github.com/luqiming19820311/LXYAPP`
 
@@ -13,17 +13,17 @@
 ```bash
 cd /Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader
 git status --short --branch
-npm run dev -- --port 3000
+npm run dev -- --port 3001
 ```
 
-如果新增 API route、Prisma schema、Tailwind/global CSS 或前端交互没有生效，优先重启 dev server。V5.3 验证时使用 `http://localhost:3000/`；历史文档曾使用 `3001`，如端口冲突可改用 `3001`。
+如果新增 API route、Prisma schema、Tailwind/global CSS 或前端交互没有生效，优先重启 dev server。V5.4 验证时使用 `http://localhost:3001/`；历史版本曾使用 `3000`，如端口冲突可在 `3000` 和 `3001` 间切换。
 
 ## 关键决策
 
 1. LXY 是本地优先的电脑端 AI RSS 信息聚合阅读器，v0.1 先以浏览器 Web 应用跑通个人使用闭环。
 2. 当前核心闭环是: 添加订阅源 -> 抓取内容 -> 标准化入库 -> 时间线展示 -> 详情阅读/播放 -> 已读/收藏/稍后读 -> 手动 AI 摘要。
 3. 技术栈固定为 Next.js 16 App Router、React 19、Tailwind CSS 4、TypeScript、Prisma 6、SQLite、`rss-parser`、`lucide-react`。
-4. 数据本地化保存在 SQLite `prisma/dev.db`；该文件目前被 Git 跟踪，会随运行、刷新、导入、阅读状态变化而改变，提交前要确认是否纳入版本。V5.3 不主动提交 `prisma/dev.db`。
+4. 数据本地化保存在 SQLite `prisma/dev.db`；该文件目前被 Git 跟踪，会随运行、刷新、导入、阅读状态变化而改变。V5.4 默认不主动提交 `prisma/dev.db` 运行态变化，除非用户明确要求。
 5. Prisma 继续固定在 6.x。当前环境中 `prisma db push` / `prisma migrate dev` 可能出现空的 schema engine 错误，因此 `prisma/init.sql` 是初始化 schema 的重要备份。
 6. YouTube 优先走官方 RSS，可从频道 URL / handle 解析 channel ID；播放使用 YouTube iframe，不再跨平台 fallback 到 Bilibili。
 7. Bilibili 优先使用本地 adapter，不依赖公共 RSSHub；遇到 Web WBI 风控时 fallback 到 APP archive 接口。
@@ -34,7 +34,7 @@ npm run dev -- --port 3000
 12. 主题偏好为浏览器本地设置，支持 Light、Dark、Follow the system，存储 key 为 `lxy-theme-preference`。
 13. 左侧 Sidebar 宽度可拖拽，默认 `260px`，范围 `212px-360px`，存储 key 为 `lxy-sidebar-width`。
 14. 从 Settings 点击左侧 Sources 文件夹或博主，会自动回到 All Feeds 并应用对应筛选，避免停留在 Settings 无法跳转。
-15. Dark 模式采用全局 utility override 修正浅色设计系统残留；V5.3 进一步让侧栏选中行使用自包含高对比样式，避免混用 `bg-white` 导致深色模式选中态发白、文字发淡。
+15. Dark 模式采用全局 utility override 修正浅色设计系统残留；V5.4 进一步为 Sources 文件夹行和来源行增加专用 class，避免 hover/selected 状态出现浅色块配浅色文字。
 16. 视频封面统一用真实 `<img>` 渲染并设置 `referrerPolicy="no-referrer"`；Bilibili 使用抓取到的封面，YouTube 缺失封面时从 videoId fallback 到 `https://i.ytimg.com/vi/<id>/hqdefault.jpg`。
 
 ## 已完成部分
@@ -58,13 +58,13 @@ npm run dev -- --port 3000
    - 支持 `yt:video:<id>` feed id 解析。
    - iframe 参数包含 autoplay、playsinline、rel、enablejsapi、origin、widget_referrer。
    - 监听 postMessage 播放状态，区分 loading/playing/blocked。
-   - V5.3 新增缩略图 fallback，feed 缺少 media thumbnail 时从 videoId 生成 `i.ytimg.com` 封面。
+   - 缩略图 fallback: feed 缺少 media thumbnail 或旧数据 `thumbnailUrl` 为空时，从 videoId 生成 `i.ytimg.com` 封面。
 3. Bilibili:
    - 支持 `rsshub://bilibili/user/video/:mid` 转本地 `bilibili://user/video/:mid`。
    - 优先 Web WBI archive API。
    - 风控错误 `-352`、`-412`、`request was banned` 时 fallback 到 APP archive。
    - 标准化 bvid、aid、标题、描述、封面、发布时间、作者、embedUrl。
-   - V5.3 封面显示改为 `<img referrerPolicy="no-referrer">`，解决 CSS background-image 场景下 Bilibili 封面可能不显示的问题。
+   - 封面显示改为 `<img referrerPolicy="no-referrer">`，解决 CSS background-image 场景下 Bilibili 封面可能不显示的问题。
 
 ### 数据模型与状态
 
@@ -85,7 +85,9 @@ npm run dev -- --port 3000
    - Sources 区域独立滚动。
    - Sidebar 可拖拽宽度，刷新后保留。
    - Dark 模式下文件夹箭头、文件夹图标、文件夹名称、Add/Manage 按钮可读性已提亮。
-   - V5.3 选中文件夹/来源行使用 `lxy-sidebar-selected-row` 自包含样式，Dark 下深底、亮边框、亮文字、亮徽标。
+   - V5.4 中 Sources 文件夹行使用 `lxy-sidebar-folder-row`、`lxy-sidebar-folder-text`、`lxy-sidebar-folder-icon`。
+   - V5.4 中 Sources 来源行使用 `lxy-sidebar-source-row`、`lxy-sidebar-source-text`。
+   - Dark 模式下文件夹/来源 hover 使用深色块 `#243044` 和亮文字，selected hover 使用深色块 `#172234`，避免白底白字或浅底浅字。
 3. 来源筛选:
    - 可按单来源筛选。
    - 可按 SourceFolder 筛选。
@@ -112,17 +114,20 @@ npm run dev -- --port 3000
 
 ### 验证结果
 
-1. V5.3 最近执行通过:
+1. V5.4 最近执行通过:
    - `npm run lint`
-   - `npm run test -- src/lib/feed.test.mts`
    - `npm run test -- src/lib/dark-theme-css.test.mts`
-2. V5.3 浏览器验证:
+2. V5.4 浏览器验证:
+   - Dark 模式下 Sources 文件夹文字为高对比亮色。
+   - 文件夹 hover/focus 为深色背景，文字和图标为白色。
+   - 来源行 `小波维修` 选中状态为深色背景 `rgb(23, 34, 52)`、白字 `rgb(255, 255, 255)`。
+   - 来源行绿色在线点、头像圆点、未读数字徽标保持正常。
+   - 清理 `.next/dev` 并重启 dev server 后，CSS chunk 包含 `lxy-sidebar-folder-row:hover` 和 `lxy-sidebar-source-row:hover` 规则。
+3. V5.3 已验证:
    - Bilibili 列表小缩略图和详情大封面均真实加载。
    - YouTube 旧数据即使 `thumbnailUrl` 为空，也能从 videoId fallback 加载缩略图。
    - 点击播放后 iframe 正常出现，Show Cover 后恢复封面。
-   - Dark 模式下选中 `科学上网` 文件夹和 `一只游民` 来源，背景为深色 `rgb(17, 24, 39)`，文字/图标为 `rgb(248, 250, 252)`，数字徽标为深底亮字。
-   - `SourceStatusDot` 在线绿色点保持原有逻辑，未在 V5.3 中修改。
-3. 之前已验证:
+4. 更早验证:
    - Sidebar 默认宽度 `260px`。
    - 拖拽宽度可达 `212px-360px`，刷新后保留。
    - Settings 点击“小Lin说”跳到对应来源列表。
@@ -183,19 +188,23 @@ npm run dev -- --port 3000
 `project-context.md`
 
 - 本文件，作为新会话恢复上下文的主要入口。
+- V5.4 更新:
+  - 记录 Dark 模式 Sources 文件夹/来源 hover 与 selected 对比度修复。
+  - 记录视频缩略图能力当前状态。
+  - 记录当前验证结果和待办状态。
 - V5.3 更新:
   - 记录视频缩略图修复。
   - 记录 Dark 模式选中来源/文件夹高对比修复。
-  - 记录当前验证结果和待办状态。
-- V5.2 更新:
-  - 记录 Dark 模式未读标记和若干图标对比度修复。
-  - 记录当前验证结果和待办状态。
 
 ### 前端主界面
 
 `src/app/page.tsx`
 
 - 主 UI 和交互文件，包含 Home、Sidebar、Timeline、DetailPanel、SettingsView、SourceFolderModal、AddSubscriptionModal 等。
+- V5.4 重点:
+  - 文件夹行新增 `lxy-sidebar-folder-row`、`lxy-sidebar-folder-text`、`lxy-sidebar-folder-icon`。
+  - 来源行新增 `lxy-sidebar-source-row`、`lxy-sidebar-source-text`。
+  - 文件夹行和来源行移除直接浅色 hover utility，改由 global CSS 管控 light/dark hover。
 - V5.3 重点:
   - 新增 `getVideoCoverUrl`，YouTube 缺少缩略图时从 videoId fallback 到 `i.ytimg.com`。
   - 新增 `VideoCoverImage`，列表和详情封面改为 `<img>`，设置 `referrerPolicy="no-referrer"`、`loading="lazy"`、`decoding="async"`，加载失败回退平台占位。
@@ -215,6 +224,10 @@ npm run dev -- --port 3000
 - Tailwind 引入和全局样式。
 - 包含 `:root[data-theme="dark"]` 的深色主题覆盖。
 - 保留系统字体，避免 Google Fonts 网络依赖。
+- V5.4 重点:
+  - 新增 `.lxy-sidebar-folder-row` 和 `.lxy-sidebar-source-row` 的 light/dark hover/focus 样式。
+  - Dark 下文件夹/来源普通文字为 `#f1f5f9`，hover/focus 文字为 `#ffffff`。
+  - Dark 下文件夹/来源 hover 背景为 `#243044`，selected hover 背景为 `#172234`。
 - V5.3 重点:
   - 新增 `.lxy-sidebar-selected-row` light/dark 自包含样式。
   - Dark 下选中来源/文件夹使用深底 `#111827`、亮边框 `#aeb8c7`、亮文字 `#f8fafc`、亮徽标。
@@ -241,7 +254,12 @@ npm run dev -- --port 3000
 
 `src/lib/dark-theme-css.test.mts`
 
-- V5.3 新增测试: Dark 主题下 selected sidebar row 需要保留 `lxy-sidebar-*` 样式钩子，并避免重新混入 `bg-white shadow-sm`。
+- V5.4 新增测试:
+  - 文件夹行和来源行保留 `lxy-sidebar-*` 专用样式钩子。
+  - 文件夹行和来源行不再直接混入浅色 `hover:bg-[#efedf0]`。
+  - Dark hover/focus 规则必须包含深色背景、亮色文字和亮边框。
+- V5.3 新增测试:
+  - Dark 主题下 selected sidebar row 需要保留 `lxy-sidebar-*` 样式钩子，并避免重新混入 `bg-white shadow-sm`。
 
 `src/lib/repository.ts`
 
@@ -311,7 +329,7 @@ src/app/api/ai/config/route.ts
 
 - 本地 SQLite 数据库。
 - 当前被 Git 跟踪，可能包含真实抓取内容和用户状态。
-- V5.3 提交默认不包含该运行状态变化，除非用户明确要求。
+- V5.4 提交默认不包含该运行状态变化，除非用户明确要求。
 
 `.env`
 
@@ -366,7 +384,7 @@ flowchart LR
    - Settings 选择 Light/Dark/System。
    - localStorage 保存 `lxy-theme-preference`。
    - `document.documentElement.dataset.theme` 驱动 CSS 覆盖。
-   - V5.3 中侧栏选中态使用组件 class + global CSS 的组合，降低 Tailwind arbitrary utility 在 Dark 模式下互相覆盖的风险。
+   - V5.4 中 Sources 文件夹行和来源行使用专用 class + global CSS 管控 hover/selected contrast，降低 Tailwind arbitrary utility 在 Dark 模式下互相覆盖的风险。
 5. Video Cover:
    - API 返回 `thumbnailUrl` 时前端优先使用。
    - YouTube 旧数据或 feed 缺失缩略图时，从 `contentUrl`/`embedUrl` videoId fallback 到 `i.ytimg.com`。
@@ -396,9 +414,9 @@ git status --short --branch
 ```
 
 4. 如需继续开发，先确认 `prisma/dev.db` 是否应该随功能提交。
-5. 如需验证 UI，打开 `http://localhost:3000/`，重点看:
+5. 如需验证 UI，打开 `http://localhost:3001/`，重点看:
    - Sidebar 拖拽。
    - Settings 来源/文件夹跳转。
-   - Dark 模式选中文件夹/来源对比度。
+   - Dark 模式文件夹行/来源行 hover 与 selected 对比度。
    - YouTube/Bilibili 列表缩略图与详情大封面。
    - YouTube/Bilibili 播放与 Show Cover。

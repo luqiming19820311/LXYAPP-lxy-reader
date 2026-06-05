@@ -60,9 +60,14 @@ test("dark theme CSS keeps selected sidebar rows readable", async () => {
   const page = await readFile("src/app/page.tsx", "utf8");
 
   for (const className of [
+    "lxy-sidebar-folder-row",
+    "lxy-sidebar-source-row",
     "lxy-sidebar-selected-row",
     "lxy-sidebar-row-text",
     "lxy-sidebar-row-icon",
+    "lxy-sidebar-folder-text",
+    "lxy-sidebar-folder-icon",
+    "lxy-sidebar-source-text",
     "lxy-sidebar-count-badge",
   ]) {
     assert.match(page, new RegExp(className), `missing ${className} in sidebar`);
@@ -78,6 +83,28 @@ test("dark theme CSS keeps selected sidebar rows readable", async () => {
     /lxy-sidebar-selected-row[^"]*bg-white[^"]*shadow-sm/,
     "selected sidebar rows should not mix dark override hooks with light utilities",
   );
+  assert.doesNotMatch(
+    page,
+    /lxy-sidebar-folder-row[^"]*hover:bg-\[#efedf0\]/,
+    "folder rows should use dedicated hover CSS instead of a light hover utility",
+  );
+  assert.doesNotMatch(
+    page,
+    /lxy-sidebar-source-row[^"]*hover:bg-\[#efedf0\]/,
+    "source rows should use dedicated hover CSS instead of a light hover utility",
+  );
   assert.match(css, /background-color: #111827 !important;/);
   assert.match(css, /color: #f8fafc !important;/);
+  assert.match(css, /\.lxy-sidebar-folder-text\s*{\s*color: #f1f5f9 !important;/);
+  assert.match(css, /\.lxy-sidebar-folder-icon\s*{\s*color: #dfe7f2 !important;/);
+  assert.match(css, /\.lxy-sidebar-source-text\s*{\s*color: #f1f5f9 !important;/);
+  assert.match(css, /\.lxy-sidebar-folder-row:hover,/);
+  assert.match(css, /\.lxy-sidebar-source-row:hover,/);
+  assert.match(css, /background-color: #243044 !important;/);
+  assert.match(css, /border-color: #516174 !important;/);
+  assert.match(css, /\.lxy-sidebar-folder-row:hover \.lxy-sidebar-folder-text,/);
+  assert.match(css, /\.lxy-sidebar-source-row:hover \.lxy-sidebar-source-text,/);
+  assert.match(css, /\.lxy-sidebar-selected-row:hover,/);
+  assert.match(css, /background-color: #172234 !important;/);
+  assert.match(css, /border-color: #c6d3e4 !important;/);
 });

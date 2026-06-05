@@ -145,6 +145,52 @@ body {
   color: #6f7b89 !important;
 }
 
+.lxy-sidebar-folder-row:hover,
+.lxy-sidebar-folder-row:focus-within {
+  background-color: #efedf0;
+}
+
+.lxy-sidebar-source-row:hover,
+.lxy-sidebar-source-row:focus-visible {
+  background-color: #efedf0;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-folder-icon {
+  color: #dfe7f2 !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-folder-text {
+  color: #f1f5f9 !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-source-text {
+  color: #f1f5f9 !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-folder-row:hover,
+:root[data-theme="dark"] .lxy-sidebar-folder-row:focus-within {
+  background-color: #243044 !important;
+  border-color: #516174 !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-source-row:hover,
+:root[data-theme="dark"] .lxy-sidebar-source-row:focus-visible {
+  background-color: #243044 !important;
+  border-color: #516174 !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-folder-row:hover .lxy-sidebar-folder-icon,
+:root[data-theme="dark"] .lxy-sidebar-folder-row:hover .lxy-sidebar-folder-text,
+:root[data-theme="dark"] .lxy-sidebar-folder-row:focus-within .lxy-sidebar-folder-icon,
+:root[data-theme="dark"] .lxy-sidebar-folder-row:focus-within .lxy-sidebar-folder-text {
+  color: #ffffff !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-source-row:hover .lxy-sidebar-source-text,
+:root[data-theme="dark"] .lxy-sidebar-source-row:focus-visible .lxy-sidebar-source-text {
+  color: #ffffff !important;
+}
+
 .lxy-sidebar-selected-row {
   background-color: #ffffff;
   border-color: #c9ced6;
@@ -159,9 +205,24 @@ body {
     0 0 0 1px rgb(185 217 255 / 0.08);
 }
 
+:root[data-theme="dark"] .lxy-sidebar-selected-row:hover,
+:root[data-theme="dark"] .lxy-sidebar-selected-row:focus-within {
+  background-color: #172234 !important;
+  border-color: #c6d3e4 !important;
+}
+
 :root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-row-icon,
 :root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-row-text {
   color: #f8fafc !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-folder-icon,
+:root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-folder-text {
+  color: #ffffff !important;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-source-text {
+  color: #ffffff !important;
 }
 
 :root[data-theme="dark"] .lxy-sidebar-selected-row .lxy-sidebar-count-badge {

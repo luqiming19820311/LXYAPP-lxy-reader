@@ -1943,10 +1943,10 @@ function Sidebar({
             return (
               <div key={folder.id}>
                 <div
-                  className={`flex min-h-9 w-full items-center gap-2 rounded-sm border px-2 py-2 text-left transition ${
+                  className={`lxy-sidebar-folder-row flex min-h-9 w-full items-center gap-2 rounded-sm border px-2 py-2 text-left transition ${
                     isSelected
                       ? "lxy-sidebar-selected-row"
-                      : "border-transparent hover:bg-[#efedf0]"
+                      : "border-transparent"
                   }`}
                 >
                   <button
@@ -1955,7 +1955,7 @@ function Sidebar({
                       toggleFolder(folder.id);
                     }}
                     aria-label={`${isExpanded ? "Collapse" : "Expand"} folder ${folder.name}`}
-                    className="lxy-sidebar-row-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#4b5b70]"
+                    className="lxy-sidebar-row-icon lxy-sidebar-folder-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#4b5b70]"
                   >
                     {isExpanded ? (
                       <ChevronDown size={17} />
@@ -1974,15 +1974,15 @@ function Sidebar({
                     {isExpanded ? (
                       <FolderOpen
                         size={17}
-                        className="lxy-sidebar-row-icon shrink-0 text-[#4b5b70]"
+                        className="lxy-sidebar-row-icon lxy-sidebar-folder-icon shrink-0 text-[#4b5b70]"
                       />
                     ) : (
                       <Folder
                         size={17}
-                        className="lxy-sidebar-row-icon shrink-0 text-[#4b5b70]"
+                        className="lxy-sidebar-row-icon lxy-sidebar-folder-icon shrink-0 text-[#4b5b70]"
                       />
                     )}
-                    <span className="lxy-sidebar-row-text min-w-0 flex-1 truncate text-[14px] font-bold text-[#3f4650]">
+                    <span className="lxy-sidebar-row-text lxy-sidebar-folder-text min-w-0 flex-1 truncate text-[14px] font-bold text-[#3f4650]">
                       {folder.name}
                     </span>
                     {folder.unreadCount ? (
@@ -2095,10 +2095,10 @@ function SourceButton({
     <button
       type="button"
       onClick={onSelect}
-      className={`flex min-h-9 w-full items-center gap-3 rounded-sm border py-2 text-left transition ${
+      className={`lxy-sidebar-source-row flex min-h-9 w-full items-center gap-3 rounded-sm border py-2 text-left transition ${
         isSelected
           ? "lxy-sidebar-selected-row"
-          : "border-transparent hover:bg-[#efedf0]"
+          : "border-transparent"
       } ${nested ? "px-1.5" : "px-2"}`}
     >
       <span
@@ -2106,7 +2106,7 @@ function SourceButton({
       >
         {source.initial}
       </span>
-      <span className="lxy-sidebar-row-text min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
+      <span className="lxy-sidebar-row-text lxy-sidebar-source-text min-w-0 flex-1 truncate text-[15px] font-semibold text-[#4d535b]">
         {source.name}
       </span>
       <SourceStatusDot status={source.status} />
