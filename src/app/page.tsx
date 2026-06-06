@@ -1862,10 +1862,10 @@ function Sidebar({
               onClick={() => onChangeView(item.id)}
               title={item.label}
               aria-label={item.label}
-              className={`group relative flex h-9 w-8 items-center justify-center rounded-sm transition ${
+              className={`lxy-sidebar-icon-button group relative flex h-9 w-8 items-center justify-center rounded-sm border border-transparent transition ${
                 isActive
-                  ? "bg-[#3f5268] text-white shadow-sm"
-                  : "text-[#525960] hover:bg-[#efedf0] hover:text-[#263241]"
+                  ? "lxy-sidebar-icon-button-active bg-[#3f5268] text-white shadow-sm"
+                  : "text-[#525960]"
               }`}
             >
               <Icon size={20} strokeWidth={2.2} />
@@ -1892,10 +1892,10 @@ function Sidebar({
           onClick={() => onChangeView("readLater")}
           title="Read Later"
           aria-label="Read Later"
-          className={`group relative flex h-9 w-8 items-center justify-center rounded-sm transition ${
+          className={`lxy-sidebar-icon-button group relative flex h-9 w-8 items-center justify-center rounded-sm border border-transparent transition ${
             activeView === "readLater"
-              ? "bg-[#3f5268] text-white shadow-sm"
-              : "text-[#525960] hover:bg-[#efedf0] hover:text-[#263241]"
+              ? "lxy-sidebar-icon-button-active bg-[#3f5268] text-white shadow-sm"
+              : "text-[#525960]"
           }`}
         >
           <Bookmark
@@ -2041,7 +2041,7 @@ function Sidebar({
             disabled={isRefreshing || sources.length === 0}
             title={refreshLabel}
             aria-label={refreshLabel}
-            className="group relative flex h-10 w-10 items-center justify-center rounded-sm text-[#525960] transition hover:bg-[#efedf0] hover:text-[#263241] disabled:cursor-not-allowed disabled:opacity-50"
+            className="lxy-sidebar-icon-button group relative flex h-10 w-10 items-center justify-center rounded-sm border border-transparent text-[#525960] transition disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCcw
               size={20}
@@ -2056,10 +2056,10 @@ function Sidebar({
             onClick={() => onChangeView("settings")}
             title="Settings"
             aria-label="Settings"
-            className={`group relative flex h-10 w-10 items-center justify-center rounded-sm transition ${
+            className={`lxy-sidebar-icon-button group relative flex h-10 w-10 items-center justify-center rounded-sm border border-transparent transition ${
               activeView === "settings"
-                ? "bg-[#3f5268] text-white shadow-sm"
-                : "text-[#525960] hover:bg-[#efedf0] hover:text-[#263241]"
+                ? "lxy-sidebar-icon-button-active bg-[#3f5268] text-white shadow-sm"
+                : "text-[#525960]"
             }`}
           >
             <Settings size={20} strokeWidth={2.2} />
@@ -2471,7 +2471,7 @@ function IconTooltipButton({
       className={`group relative flex h-10 w-10 items-center justify-center rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${variantClass} ${className}`}
     >
       {children}
-      <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
+      <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-sm bg-[#263241] px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">
         {label}
       </span>
     </button>

@@ -145,6 +145,20 @@ body {
   color: #6f7b89 !important;
 }
 
+.lxy-sidebar-icon-button:not(.lxy-sidebar-icon-button-active):not(:disabled):hover,
+.lxy-sidebar-icon-button:not(.lxy-sidebar-icon-button-active):not(:disabled):focus-visible {
+  background-color: #efedf0;
+  color: #263241;
+}
+
+:root[data-theme="dark"] .lxy-sidebar-icon-button:not(.lxy-sidebar-icon-button-active):not(:disabled):hover,
+:root[data-theme="dark"] .lxy-sidebar-icon-button:not(.lxy-sidebar-icon-button-active):not(:disabled):focus-visible {
+  background-color: transparent !important;
+  border-color: #8fa3bd !important;
+  color: #f8fafc !important;
+  box-shadow: 0 0 0 1px rgb(143 163 189 / 0.18);
+}
+
 .lxy-sidebar-folder-row:hover,
 .lxy-sidebar-folder-row:focus-within {
   background-color: #efedf0;

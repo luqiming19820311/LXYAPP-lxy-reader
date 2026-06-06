@@ -108,3 +108,31 @@ test("dark theme CSS keeps selected sidebar rows readable", async () => {
   assert.match(css, /background-color: #172234 !important;/);
   assert.match(css, /border-color: #c6d3e4 !important;/);
 });
+
+test("dark theme sidebar icon buttons use outline hover states", async () => {
+  const css = await readFile("src/app/globals.css", "utf8");
+  const page = await readFile("src/app/page.tsx", "utf8");
+
+  assert.match(page, /lxy-sidebar-icon-button/, "missing sidebar icon button hook");
+  assert.match(
+    page,
+    /lxy-sidebar-icon-button-active/,
+    "missing sidebar icon active hook",
+  );
+  assert.doesNotMatch(
+    page,
+    /lxy-sidebar-icon-button[^"]*hover:bg-\[#efedf0\]/,
+    "sidebar icon buttons should not depend on a light hover utility",
+  );
+  assert.match(
+    css,
+    /\.lxy-sidebar-icon-button:not\(\.lxy-sidebar-icon-button-active\):not\(:disabled\):hover/,
+  );
+  assert.match(
+    css,
+    /:root\[data-theme="dark"\] \.lxy-sidebar-icon-button:not\(\.lxy-sidebar-icon-button-active\):not\(:disabled\):hover/,
+  );
+  assert.match(css, /background-color: transparent !important;/);
+  assert.match(css, /border-color: #8fa3bd !important;/);
+  assert.match(css, /color: #f8fafc !important;/);
+});

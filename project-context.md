@@ -1,10 +1,10 @@
 # LXY Reader Project Context
 
-更新日期: 2026-06-05  
-版本标记: V5.4 已提交并推送  
+更新日期: 2026-06-06  
+版本标记: V6.0 已提交并推送  
 主工作区: `/Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader`  
 外层项目目录: `/Users/luqiming/Downloads/work/codex/LXYAPP`  
-本地预览: `http://localhost:3001/`  
+本地预览: `http://localhost:3000/` 或 `http://localhost:3001/`  
 应用仓库: `https://github.com/luqiming19820311/LXYAPP-lxy-reader`  
 外层仓库: `https://github.com/luqiming19820311/LXYAPP`
 
@@ -13,29 +13,66 @@
 ```bash
 cd /Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader
 git status --short --branch
-npm run dev -- --port 3001
+npm run dev -- --port 3000
 ```
 
-如果新增 API route、Prisma schema、Tailwind/global CSS 或前端交互没有生效，优先重启 dev server。V5.4 验证时使用 `http://localhost:3001/`；历史版本曾使用 `3000`，如端口冲突可在 `3000` 和 `3001` 间切换。
+如果端口被占用，可切换到 `3001`。新增 API route、Prisma schema、全局 CSS 或前端交互没有生效时，优先重启 dev server。
 
 ## 关键决策
 
 1. LXY 是本地优先的电脑端 AI RSS 信息聚合阅读器，v0.1 先以浏览器 Web 应用跑通个人使用闭环。
-2. 当前核心闭环是: 添加订阅源 -> 抓取内容 -> 标准化入库 -> 时间线展示 -> 详情阅读/播放 -> 已读/收藏/稍后读 -> 手动 AI 摘要。
+2. 核心闭环是: 添加订阅源 -> 抓取内容 -> 标准化入库 -> 时间线展示 -> 详情阅读/播放 -> 已读/收藏/稍后读 -> 手动 AI 摘要。
 3. 技术栈固定为 Next.js 16 App Router、React 19、Tailwind CSS 4、TypeScript、Prisma 6、SQLite、`rss-parser`、`lucide-react`。
-4. 数据本地化保存在 SQLite `prisma/dev.db`；该文件目前被 Git 跟踪，会随运行、刷新、导入、阅读状态变化而改变。V5.4 默认不主动提交 `prisma/dev.db` 运行态变化，除非用户明确要求。
-5. Prisma 继续固定在 6.x。当前环境中 `prisma db push` / `prisma migrate dev` 可能出现空的 schema engine 错误，因此 `prisma/init.sql` 是初始化 schema 的重要备份。
-6. YouTube 优先走官方 RSS，可从频道 URL / handle 解析 channel ID；播放使用 YouTube iframe，不再跨平台 fallback 到 Bilibili。
-7. Bilibili 优先使用本地 adapter，不依赖公共 RSSHub；遇到 Web WBI 风控时 fallback 到 APP archive 接口。
-8. RSSHub 仍支持普通 HTTP URL 和 `rsshub://` 输入，Base URL、access code、Bilibili Cookie 可在 Settings 中配置。
-9. 本机敏感配置统一通过 `src/lib/local-settings.ts` 写入 `.lxy-settings.json`；API 只返回 configured/missing，不返回 Key、Cookie、access code 明文。
-10. AI 摘要为手动触发，不做自动批量摘要；默认模型为 `gpt-5`，调用 OpenAI Responses API。
-11. UI 保持阅读器工具形态: 左侧紧凑图标导航，中间时间线，右侧详情/播放/摘要，Settings 为垂直卡片布局。
-12. 主题偏好为浏览器本地设置，支持 Light、Dark、Follow the system，存储 key 为 `lxy-theme-preference`。
-13. 左侧 Sidebar 宽度可拖拽，默认 `260px`，范围 `212px-360px`，存储 key 为 `lxy-sidebar-width`。
-14. 从 Settings 点击左侧 Sources 文件夹或博主，会自动回到 All Feeds 并应用对应筛选，避免停留在 Settings 无法跳转。
-15. Dark 模式采用全局 utility override 修正浅色设计系统残留；V5.4 进一步为 Sources 文件夹行和来源行增加专用 class，避免 hover/selected 状态出现浅色块配浅色文字。
-16. 视频封面统一用真实 `<img>` 渲染并设置 `referrerPolicy="no-referrer"`；Bilibili 使用抓取到的封面，YouTube 缺失封面时从 videoId fallback 到 `https://i.ytimg.com/vi/<id>/hqdefault.jpg`。
+4. 数据本地化保存在 SQLite `prisma/dev.db`。该文件目前被 Git 跟踪，会随运行、刷新、导入和阅读状态变化而改变。
+5. Prisma 继续固定在 6.x。当前环境中 `prisma db push` / `prisma migrate dev` 可能出现 schema engine 空错误，因此 `prisma/init.sql` 是初始化 schema 的重要备份。
+6. YouTube 订阅入口保持不变: 频道 URL、handle 和 `rsshub://youtube/user/...` 最终仍保存为官方 RSS `https://www.youtube.com/feeds/videos.xml?channel_id=...`。
+7. YouTube 为解决官方 RSS 只给十几条的问题，正式刷新时先读官方 RSS，再用频道公开视频页和 continuation 补抓历史视频；不引入 YouTube API Key，不切换 RSSHub。
+8. Bilibili 继续优先使用本地 adapter，不依赖公共 RSSHub；遇到 Web WBI 风控时 fallback 到 APP archive 接口。
+9. Bilibili 和 YouTube 都以“订阅入口不变，只增加可保存条目数”为原则，避免改动用户已有订阅和 UI 行为。
+10. RSSHub 仍支持普通 HTTP URL 和 `rsshub://` 输入，Base URL、access code、Bilibili Cookie 可在 Settings 中配置。
+11. 本机敏感配置统一通过 `src/lib/local-settings.ts` 写入 `.lxy-settings.json`；API 只返回 configured/missing，不返回 Key、Cookie、access code 明文。
+12. AI 摘要为手动触发，不做自动批量摘要；默认模型为 `gpt-5`，调用 OpenAI Responses API。
+13. UI 保持阅读器工具形态: 左侧紧凑图标导航，中间时间线，右侧详情/播放/摘要，Settings 为垂直卡片布局。
+14. 主题偏好为浏览器本地设置，支持 Light、Dark、Follow the system，存储 key 为 `lxy-theme-preference`。
+15. 左侧 Sidebar 宽度可拖拽，默认 `260px`，范围 `212px-360px`，存储 key 为 `lxy-sidebar-width`。
+16. Dark 模式采用全局 utility override 修正浅色设计系统残留，同时为 sidebar 来源行、文件夹行、图标按钮提供专用 class。
+17. 视频封面统一用真实 `<img>` 渲染并设置 `referrerPolicy="no-referrer"`；Bilibili 使用抓取到的封面，YouTube 缺失封面时从 videoId fallback 到 `https://i.ytimg.com/vi/<id>/hqdefault.jpg`。
+
+## 整体架构思路
+
+### 应用结构
+
+1. `src/app/page.tsx` 是主界面与交互入口，包含 Home、Sidebar、Timeline、DetailPanel、SettingsView、SourceFolderModal、AddSubscriptionModal 等。
+2. `src/app/api/**/route.ts` 提供 App Router API，包括订阅源、内容项状态、AI 摘要、文件夹、OPML 和设置。
+3. `src/lib/repository.ts` 负责数据库读写、订阅创建、刷新、状态更新和友好错误包装。
+4. `src/lib/feed.ts` 负责输入解析、平台抓取、分页补抓、标准化内容和视频 embed/thumbnail 生成。
+5. `src/lib/summary.ts` 负责 OpenAI Responses API 摘要调用与 `AiSummary` 入库。
+6. `src/lib/local-settings.ts` 和 `src/lib/feed-settings.ts` 负责本机敏感配置读取、保存和脱敏返回。
+7. `prisma/schema.prisma` 和 `prisma/init.sql` 定义 SQLite schema。
+
+### 数据流
+
+1. 用户添加订阅时先调用 preview，展示少量预览项。
+2. 确认添加后创建 `Subscription`，再触发正式 fetch。
+3. fetch 调用 `fetchNormalizedItems(feedUrl)`，按平台抓取并标准化为 `NormalizedItem`。
+4. `repository.ts` 通过 `contentItem.upsert(subscriptionId, externalId)` 入库，避免重复。
+5. 前端加载 `/api/items`、`/api/subscriptions`、`/api/source-folders` 后在客户端做视图筛选和搜索。
+6. 用户状态写入 `UserItemState`，AI 摘要写入 `AiSummary`。
+
+### 平台策略
+
+1. 普通 RSS/Atom/RSSHub: 直接通过 `rss-parser` 或 RSSHub JSON 解析。
+2. YouTube:
+   - 保存官方 RSS feedUrl。
+   - RSS 负责最新条目和稳定基础数据。
+   - 频道公开视频页负责补充历史条目。
+   - 支持新版 `lockupViewModel` 和旧版 `videoRenderer`。
+   - continuation token 会逐个试探，跳过返回空内容的 token，直到累计补充视频达到约 120 条、无可用 continuation 或达到 200 页保护上限。
+3. Bilibili:
+   - 保存 `bilibili://user/video/:mid` 本地 adapter URL。
+   - Web WBI archive API 使用 `pn`/`ps=50` 多页读取。
+   - 风控时 APP archive fallback 同样多页读取。
+   - 最大页数保护为 200 页。
 
 ## 已完成部分
 
@@ -49,22 +86,27 @@ npm run dev -- --port 3001
 6. OPML 导入导出: `/api/subscriptions/opml`。
 7. SourceFolder 分组模型与 API 已实现，删除文件夹会把订阅移回未分类。
 
-### 平台与解析
+### YouTube 收录
 
-1. 普通 RSS/Atom、RSSHub HTTP、`rsshub://` 均可预览和抓取。
-2. YouTube:
-   - 支持频道页、handle、RSSHub YouTube 路由转官方 RSS。
-   - 支持 Shorts/embed/live/watch URL 的 videoId 解析。
-   - 支持 `yt:video:<id>` feed id 解析。
-   - iframe 参数包含 autoplay、playsinline、rel、enablejsapi、origin、widget_referrer。
-   - 监听 postMessage 播放状态，区分 loading/playing/blocked。
-   - 缩略图 fallback: feed 缺少 media thumbnail 或旧数据 `thumbnailUrl` 为空时，从 videoId 生成 `i.ytimg.com` 封面。
-3. Bilibili:
-   - 支持 `rsshub://bilibili/user/video/:mid` 转本地 `bilibili://user/video/:mid`。
-   - 优先 Web WBI archive API。
-   - 风控错误 `-352`、`-412`、`request was banned` 时 fallback 到 APP archive。
-   - 标准化 bvid、aid、标题、描述、封面、发布时间、作者、embedUrl。
-   - 封面显示改为 `<img referrerPolicy="no-referrer">`，解决 CSS background-image 场景下 Bilibili 封面可能不显示的问题。
+1. 支持频道页、handle、RSSHub YouTube user 路由转官方 RSS。
+2. 支持 Shorts/embed/live/watch URL 的 videoId 解析。
+3. 支持 `yt:video:<id>` feed id 解析。
+4. 官方 RSS 返回项优先保留，保证最新条目的标题、发布时间、作者等稳定字段不被页面补抓覆盖。
+5. 频道公开视频页补抓支持 `videoRenderer` 和新版 `lockupViewModel`。
+6. continuation 支持多候选 token 试探，能跳过空 token，补抓 100+ 条视频。
+7. 缩略图 fallback 从 videoId 生成 `i.ytimg.com` 封面。
+8. YouTube iframe 播放参数包含 autoplay、playsinline、rel、enablejsapi、origin、widget_referrer。
+9. 监听 postMessage 播放状态，区分 loading/playing/blocked。
+
+### Bilibili 收录
+
+1. 支持 `rsshub://bilibili/user/video/:mid` 转本地 `bilibili://user/video/:mid`。
+2. 支持 Bilibili 空间 URL 解析 mid。
+3. Web WBI archive API 多页抓取，`ps=50`，最多 200 页。
+4. 风控错误 `-352`、`-412`、`request was banned` 时 fallback 到 APP archive。
+5. APP archive fallback 同样多页抓取，`ps=50`，最多 200 页。
+6. 标准化 bvid、aid、标题、描述、封面、发布时间、作者、embedUrl。
+7. Bilibili 封面显示使用 `<img referrerPolicy="no-referrer">`，避免 CSS background-image 场景下封面不显示。
 
 ### 数据模型与状态
 
@@ -84,10 +126,8 @@ npm run dev -- --port 3001
    - Settings 和 Refresh 在底部。
    - Sources 区域独立滚动。
    - Sidebar 可拖拽宽度，刷新后保留。
-   - Dark 模式下文件夹箭头、文件夹图标、文件夹名称、Add/Manage 按钮可读性已提亮。
-   - V5.4 中 Sources 文件夹行使用 `lxy-sidebar-folder-row`、`lxy-sidebar-folder-text`、`lxy-sidebar-folder-icon`。
-   - V5.4 中 Sources 来源行使用 `lxy-sidebar-source-row`、`lxy-sidebar-source-text`。
-   - Dark 模式下文件夹/来源 hover 使用深色块 `#243044` 和亮文字，selected hover 使用深色块 `#172234`，避免白底白字或浅底浅字。
+   - Dark 模式下 sidebar 图标 hover 改为外框，不再出现浅色实心块。
+   - Dark 模式下文件夹/来源 hover 使用深色块和亮文字，selected hover 使用更深色块。
 3. 来源筛选:
    - 可按单来源筛选。
    - 可按 SourceFolder 筛选。
@@ -99,6 +139,7 @@ npm run dev -- --port 3001
    - 视频条目左侧缩略图显示真实封面，图片加载失败时回退到平台占位。
 5. 详情页:
    - Open Original、Copy Link、Favorite、Read Later、Mark Read/Unread 图标按钮。
+   - 详情页操作按钮 hover tooltip 已改为显示在按钮下方。
    - Dark 模式下详情操作按钮使用深色底、亮边框和亮图标，避免低对比度。
    - YouTube/Bilibili iframe 播放。
    - 详情视频大封面显示真实缩略图，点击播放后切换 iframe，Show Cover 后回到封面。
@@ -106,48 +147,42 @@ npm run dev -- --port 3001
    - Content Context 展示正文上下文。
    - AI Summary 手动生成/重新生成。
 6. Settings:
-   - General、AI Configuration、Network、OPML、Sources 卡片。
+   - General、AI Configuration、OPML、Sources 卡片。
    - 主题偏好可切换并持久化。
    - AI Key/模型可保存和清除。
-   - RSSHub Base URL、access code、Bilibili Cookie 可配置。
    - 订阅源可重命名、启用/停用、删除。
 
-### 验证结果
+### V6.0 验证结果
 
-1. V5.4 最近执行通过:
+1. 已执行通过:
    - `npm run lint`
+   - `npm run test -- src/lib/feed.test.mts src/lib/repository.test.mts`
    - `npm run test -- src/lib/dark-theme-css.test.mts`
-2. V5.4 浏览器验证:
-   - Dark 模式下 Sources 文件夹文字为高对比亮色。
-   - 文件夹 hover/focus 为深色背景，文字和图标为白色。
-   - 来源行 `小波维修` 选中状态为深色背景 `rgb(23, 34, 52)`、白字 `rgb(255, 255, 255)`。
-   - 来源行绿色在线点、头像圆点、未读数字徽标保持正常。
-   - 清理 `.next/dev` 并重启 dev server 后，CSS chunk 包含 `lxy-sidebar-folder-row:hover` 和 `lxy-sidebar-source-row:hover` 规则。
-3. V5.3 已验证:
-   - Bilibili 列表小缩略图和详情大封面均真实加载。
-   - YouTube 旧数据即使 `thumbnailUrl` 为空，也能从 videoId fallback 加载缩略图。
-   - 点击播放后 iframe 正常出现，Show Cover 后恢复封面。
-4. 更早验证:
-   - Sidebar 默认宽度 `260px`。
-   - 拖拽宽度可达 `212px-360px`，刷新后保留。
-   - Settings 点击“小Lin说”跳到对应来源列表。
-   - Settings 点击“科学上网”跳到对应文件夹列表。
-   - YouTube 小Lin说多条视频可嵌入播放。
-   - Bilibili 风控 fallback 到 APP archive 可返回视频列表。
-   - Read Later API 可置入和移出真实内容。
-   - AI 设置保存/清除假 Key 不泄露明文。
+2. 新增/覆盖测试:
+   - Bilibili Web WBI 多页读取。
+   - Bilibili APP fallback 多页读取。
+   - YouTube 官方 RSS + 频道页补抓合并。
+   - YouTube `lockupViewModel` 100+ 补抓。
+   - YouTube 多 continuation token 中跳过空 token。
+   - YouTube 页面补抓失败时回退 RSS。
+   - Dark 模式 sidebar 图标 hover 外框。
+3. 真实联网验证:
+   - 尝试过真实 YouTube 联网只读验证，但工具权限自动审核超时，未完成。
+   - 本地 mock 已覆盖 100+ 条补抓路径。
 
 ## 待办事项
 
 ### 高优先级
 
-1. 如外层仓库使用 submodule，确认是否需要同步外层仓库指针。
-2. 测试真实 OpenAI 摘要调用:
+1. 手动刷新真实 YouTube 订阅，确认侧边栏条目数从十几条增加到 100+。
+2. 手动刷新真实 Bilibili 订阅，确认条目数从 20 左右增加到多页结果。
+3. 如外层仓库使用 submodule，确认是否需要同步外层仓库指针。
+4. 测试真实 OpenAI 摘要调用:
    - 保存真实 OpenAI API Key。
    - 对真实内容生成摘要。
    - 刷新后确认 `AiSummary` 保留。
    - 确认错误提示足够友好。
-3. 决定 `prisma/dev.db` 长期策略:
+5. 决定 `prisma/dev.db` 长期策略:
    - 继续纳入 Git，保留真实样本和本地状态。
    - 或改为只提交 schema/seed，减少运行状态噪音。
 
@@ -180,243 +215,69 @@ npm run dev -- --port 3001
 5. 视频播放源发现和缓存。
 6. 订阅源 favicon 抓取。
 7. 更细的失败重试与后台刷新策略。
+8. YouTube 公开页面结构变化时，持续维护 `lockupViewModel` / `videoRenderer` 解析兼容。
 
 ## 重要文件修改记录
 
-### 文档
-
-`project-context.md`
+### `project-context.md`
 
 - 本文件，作为新会话恢复上下文的主要入口。
-- V5.4 更新:
-  - 记录 Dark 模式 Sources 文件夹/来源 hover 与 selected 对比度修复。
-  - 记录视频缩略图能力当前状态。
-  - 记录当前验证结果和待办状态。
-- V5.3 更新:
-  - 记录视频缩略图修复。
-  - 记录 Dark 模式选中来源/文件夹高对比修复。
+- V6.0 更新:
+  - 记录 YouTube 和 Bilibili 多条目收录策略。
+  - 记录 Dark 模式图标 hover 和详情 tooltip 微调。
+  - 记录 V6.0 验证结果、待办事项和整体架构。
 
-### 前端主界面
-
-`src/app/page.tsx`
-
-- 主 UI 和交互文件，包含 Home、Sidebar、Timeline、DetailPanel、SettingsView、SourceFolderModal、AddSubscriptionModal 等。
-- V5.4 重点:
-  - 文件夹行新增 `lxy-sidebar-folder-row`、`lxy-sidebar-folder-text`、`lxy-sidebar-folder-icon`。
-  - 来源行新增 `lxy-sidebar-source-row`、`lxy-sidebar-source-text`。
-  - 文件夹行和来源行移除直接浅色 hover utility，改由 global CSS 管控 light/dark hover。
-- V5.3 重点:
-  - 新增 `getVideoCoverUrl`，YouTube 缺少缩略图时从 videoId fallback 到 `i.ytimg.com`。
-  - 新增 `VideoCoverImage`，列表和详情封面改为 `<img>`，设置 `referrerPolicy="no-referrer"`、`loading="lazy"`、`decoding="async"`，加载失败回退平台占位。
-  - Sidebar 选中来源/文件夹改为 `lxy-sidebar-selected-row` 自包含样式入口，不再混用 `bg-white shadow-sm`。
-- V5/V5.1/V5.2 重点:
-  - 图标化 Sidebar 与详情页操作按钮。
-  - SourceFolder 筛选与管理。
-  - Read Later 真实视图和详情按钮。
-  - Settings 卡片化布局。
-  - 主题偏好 wiring。
-  - Sidebar 可拖拽宽度，localStorage 持久化。
-  - Settings 中点击来源/文件夹自动跳回内容列表。
-  - 时间线未读圆点从深蓝灰改为在线状态同款绿色 `#17bf7d`。
-
-`src/app/globals.css`
-
-- Tailwind 引入和全局样式。
-- 包含 `:root[data-theme="dark"]` 的深色主题覆盖。
-- 保留系统字体，避免 Google Fonts 网络依赖。
-- V5.4 重点:
-  - 新增 `.lxy-sidebar-folder-row` 和 `.lxy-sidebar-source-row` 的 light/dark hover/focus 样式。
-  - Dark 下文件夹/来源普通文字为 `#f1f5f9`，hover/focus 文字为 `#ffffff`。
-  - Dark 下文件夹/来源 hover 背景为 `#243044`，selected hover 背景为 `#172234`。
-- V5.3 重点:
-  - 新增 `.lxy-sidebar-selected-row` light/dark 自包含样式。
-  - Dark 下选中来源/文件夹使用深底 `#111827`、亮边框 `#aeb8c7`、亮文字 `#f8fafc`、亮徽标。
-- V5.2 重点:
-  - 补齐 Dark 模式下 `text-[#34495f]`、`text-[#46566b]`、`text-[#4b5b70]`、`text-[#3f4650]` 等颜色 override。
-  - 提亮 `border-[#d3d7de]`、`border-[#c9ced6]`。
-  - 将 `bg-[#f6f4f5]` 在 Dark 模式映射为深色按钮底，修复详情页 ghost 图标按钮低对比度。
-
-`src/app/layout.tsx`
-
-- Root layout 和页面 metadata。
-
-### 核心库与测试
-
-`src/lib/feed.ts`
+### `src/lib/feed.ts`
 
 - Feed 输入解析、RSSHub URL 构造、YouTube/Bilibili/RSS 抓取与标准化。
-- V5.3 新增 `buildFallbackThumbnailUrl`，YouTube feed item 缺少 media thumbnail 时从 `contentUrl` 的 videoId 生成缩略图。
-- `getYouTubeVideoId` 支持 `yt:video:<id>`。
+- V6.0 重点:
+  - Bilibili Web WBI archive 多页读取。
+  - Bilibili APP archive fallback 多页读取。
+  - YouTube 官方 RSS 读取后补抓频道公开视频页。
+  - YouTube 支持 `videoRenderer` 和新版 `lockupViewModel`。
+  - YouTube continuation 多 token 试探，目标补抓约 120 条。
+  - YouTube 补抓失败时保持 RSS fallback，不让刷新失败。
 
-`src/lib/feed.test.mts`
+### `src/lib/feed.test.mts`
 
-- V5.3 新增测试: RSSHub JSON/YouTube feed 缺少 media thumbnail 时，应生成 `https://i.ytimg.com/vi/<id>/hqdefault.jpg`。
+- V6.0 新增测试:
+  - Bilibili Web WBI 多页读取。
+  - Bilibili APP fallback 多页读取。
+  - YouTube 官方 RSS + 页面补抓。
+  - YouTube 100+ `lockupViewModel` 补抓。
+  - YouTube 空 continuation token 跳过。
+  - YouTube 页面失败回退 RSS。
 
-`src/lib/dark-theme-css.test.mts`
+### `src/app/page.tsx`
 
-- V5.4 新增测试:
-  - 文件夹行和来源行保留 `lxy-sidebar-*` 专用样式钩子。
-  - 文件夹行和来源行不再直接混入浅色 `hover:bg-[#efedf0]`。
-  - Dark hover/focus 规则必须包含深色背景、亮色文字和亮边框。
-- V5.3 新增测试:
-  - Dark 主题下 selected sidebar row 需要保留 `lxy-sidebar-*` 样式钩子，并避免重新混入 `bg-white shadow-sm`。
+- 主 UI 和交互文件。
+- V6.0 重点:
+  - Sidebar 顶部/底部图标按钮新增 `lxy-sidebar-icon-button` 和 `lxy-sidebar-icon-button-active`。
+  - 详情页 `IconTooltipButton` 的 tooltip 从按钮上方改为按钮下方。
+  - 保留所有按钮点击、tooltip 文案、ARIA、图标和状态逻辑。
 
-`src/lib/repository.ts`
+### `src/app/globals.css`
 
-- 数据访问层，负责订阅、内容、文件夹、用户状态、抓取入库、OPML 导入。
+- Tailwind 引入和全局样式。
+- V6.0 重点:
+  - Dark 模式下 `.lxy-sidebar-icon-button` hover/focus 改为透明底 + 外框。
+  - Light 模式保留原浅色 hover。
+  - 保留已有 sidebar folder/source/selected row dark override。
 
-`src/lib/local-settings.ts`
+### `src/lib/dark-theme-css.test.mts`
 
-- 本机设置文件读写，避免不同设置模块互相覆盖。
+- V6.0 新增测试:
+  - Sidebar 图标按钮保留专用样式钩子。
+  - Dark 模式 hover/focus 使用外框。
+  - 图标按钮不再依赖浅色 hover utility 作为 dark hover 主反馈。
 
-`src/lib/feed-settings.ts`
-
-- RSSHub Base URL、access code、Bilibili Cookie 的读取与保存。
-
-`src/lib/ai-settings.ts`
-
-- OpenAI API Key 和默认摘要模型的读取与保存。
-
-`src/lib/summary.ts`
-
-- 调用 OpenAI Responses API 并 upsert `AiSummary`。
-
-`src/lib/opml.ts`
-
-- OPML 构建和解析。
-
-`src/lib/theme-preference.ts`
-
-- 主题偏好标准化和 effective theme 计算。
-
-### API Routes
-
-```text
-src/app/api/items/route.ts
-src/app/api/items/[id]/read/route.ts
-src/app/api/items/[id]/unread/route.ts
-src/app/api/items/[id]/favorite/route.ts
-src/app/api/items/[id]/unfavorite/route.ts
-src/app/api/items/[id]/read-later/route.ts
-src/app/api/items/[id]/unread-later/route.ts
-src/app/api/items/[id]/summary/route.ts
-src/app/api/subscriptions/route.ts
-src/app/api/subscriptions/[id]/route.ts
-src/app/api/subscriptions/[id]/fetch/route.ts
-src/app/api/subscriptions/preview/route.ts
-src/app/api/subscriptions/opml/route.ts
-src/app/api/source-folders/route.ts
-src/app/api/source-folders/[id]/route.ts
-src/app/api/settings/feed/route.ts
-src/app/api/ai/config/route.ts
-```
-
-- Next 16 动态 route handler 使用 `{ params: Promise<{ id: string }> }` 或 `RouteContext<"...">`，读取时需要 `await context.params`。
-
-### 数据与配置
-
-`prisma/schema.prisma`
-
-- Prisma 数据模型来源。
-- 当前包含 `Subscription`、`SourceFolder`、`ContentItem`、`UserItemState`、`AiSummary`。
-
-`prisma/init.sql`
-
-- SQLite 初始化 schema。
-- 用来绕过当前环境里 Prisma schema engine 迁移不稳定的问题。
-
-`prisma/dev.db`
+### `prisma/dev.db`
 
 - 本地 SQLite 数据库。
-- 当前被 Git 跟踪，可能包含真实抓取内容和用户状态。
-- V5.4 提交默认不包含该运行状态变化，除非用户明确要求。
+- V6.0 期间刷新、测试和本地运行会改变该文件；当前仍被 Git 跟踪。
 
-`.env`
+## Git 提醒
 
-```env
-DATABASE_URL="file:./dev.db"
-RSSHUB_BASE_URL="https://rsshub.app"
-```
-
-`.lxy-settings.json`
-
-- 本机运行时设置文件。
-- 保存 RSSHub/Bilibili/OpenAI 相关设置。
-- 不应在 API 中返回明文敏感字段。
-
-## 整体架构思路
-
-```mermaid
-flowchart LR
-  UI["Next.js Client UI\nsrc/app/page.tsx"] --> API["App Router API Routes\nsrc/app/api/*"]
-  API --> Repo["Repository Layer\nsrc/lib/repository.ts"]
-  Repo --> Prisma["Prisma Client"]
-  Prisma --> SQLite["SQLite\nprisma/dev.db"]
-  Repo --> Feed["Feed Resolver/Parser\nsrc/lib/feed.ts"]
-  Feed --> YouTube["YouTube Official RSS\n+ thumbnail fallback"]
-  Feed --> Bilibili["Bilibili WBI / APP APIs"]
-  Feed --> RSSHub["RSSHub / Generic RSS"]
-  API --> Summary["AI Summary\nsrc/lib/summary.ts"]
-  Summary --> LocalSettings["Local Settings\nsrc/lib/local-settings.ts"]
-  API --> Settings["Feed/AI Settings\nsrc/lib/*-settings.ts"]
-  Settings --> LocalSettings
-```
-
-### 运行流
-
-1. Add Subscription:
-   - 用户输入 URL。
-   - preview route 解析输入并预览。
-   - confirm 创建或更新订阅。
-   - 初次抓取写入 `ContentItem`。
-   - 前端刷新订阅、内容、文件夹和配置。
-2. Refresh:
-   - 根据当前选择刷新单来源、文件夹或全部来源。
-   - inactive 来源跳过。
-   - repository 抓取并 upsert 内容。
-   - UI 显示 refresh report。
-3. Item State:
-   - 前端乐观更新 read/favorite/readLater。
-   - API 写入 `UserItemState`。
-   - 成功后用服务端响应校准。
-   - Favorites/Read Later 移除当前条目时自动选择下一条。
-4. Theme:
-   - Settings 选择 Light/Dark/System。
-   - localStorage 保存 `lxy-theme-preference`。
-   - `document.documentElement.dataset.theme` 驱动 CSS 覆盖。
-   - V5.4 中 Sources 文件夹行和来源行使用专用 class + global CSS 管控 hover/selected contrast，降低 Tailwind arbitrary utility 在 Dark 模式下互相覆盖的风险。
-5. Video Cover:
-   - API 返回 `thumbnailUrl` 时前端优先使用。
-   - YouTube 旧数据或 feed 缺失缩略图时，从 `contentUrl`/`embedUrl` videoId fallback 到 `i.ytimg.com`。
-   - Bilibili 使用抓取封面，前端 `<img referrerPolicy="no-referrer">` 降低防盗链影响。
-   - 图片失败时回退到 `PlatformPlaceholder`。
-6. AI Summary:
-   - Settings 保存 Key 和模型。
-   - 详情页手动触发摘要。
-   - Route Handler 调用 `summary.ts`。
-   - 结果写入 `AiSummary` 并回显。
-
-## 下次会话建议
-
-1. 优先读取本文件。
-2. 检查应用仓库状态:
-
-```bash
-cd /Users/luqiming/Downloads/work/codex/LXYAPP/lxy-reader
-git status --short --branch
-```
-
-3. 如需同步外层仓库 submodule 指针:
-
-```bash
-cd /Users/luqiming/Downloads/work/codex/LXYAPP
-git status --short --branch
-```
-
-4. 如需继续开发，先确认 `prisma/dev.db` 是否应该随功能提交。
-5. 如需验证 UI，打开 `http://localhost:3001/`，重点看:
-   - Sidebar 拖拽。
-   - Settings 来源/文件夹跳转。
-   - Dark 模式文件夹行/来源行 hover 与 selected 对比度。
-   - YouTube/Bilibili 列表缩略图与详情大封面。
-   - YouTube/Bilibili 播放与 Show Cover。
+1. 当前应用仓库远程: `origin https://github.com/luqiming19820311/LXYAPP-lxy-reader.git`
+2. 当前分支: `main`
+3. V6.0 提交备注建议: `V6.0: fix platform ingestion and core UI bugs`

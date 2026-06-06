@@ -116,6 +116,9 @@ type BilibiliArchivePayload = {
     info?: {
       name?: string;
     };
+    page?: {
+      count?: number;
+    };
     list?: {
       vlist?: BilibiliArchiveVideo[];
     };
@@ -160,11 +163,25 @@ type BilibiliArchiveFeed = {
   videos: BilibiliArchiveVideo[];
 };
 
+type YouTubePageVideo = {
+  videoId: string;
+  title: string;
+  author: string | null;
+  publishedText: string | null;
+  thumbnailUrl: string | null;
+};
+
 const BILIBILI_APP_KEY = "1d8b6e7d45233436";
 const BILIBILI_APP_SECRET = "560c52ccd288fed045859ed18bffd973";
 const BILIBILI_APP_BUILD = "7420300";
 const BILIBILI_APP_USER_AGENT =
   "Mozilla/5.0 BiliDroid/7.42.0 os/android model/Pixel mobi_app/android build/7420300";
+const BILIBILI_ARCHIVE_PAGE_SIZE = 50;
+const BILIBILI_ARCHIVE_MAX_PAGES = 200;
+const YOUTUBE_TARGET_SUPPLEMENTAL_VIDEO_COUNT = 120;
+const YOUTUBE_CONTINUATION_MAX_PAGES = 200;
+const YOUTUBE_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 
 const BILIBILI_WBI_MIXIN_KEY_TABLE = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -228,6 +245,18 @@ export async function resolveFeedInput(inputUrl: string): Promise<ResolvedFeedIn
   }
 
   const url = new URL(trimmed);
+  const youtubeChannelId = getYouTubeChannelIdFromFeedUrl(trimmed);
+
+  if (youtubeChannelId) {
+    return {
+      inputUrl: trimmed,
+      feedUrl: trimmed,
+      rsshubRoute: null,
+      platform: "youtube" as const,
+      domainKey: "youtube.com",
+      siteUrl: `https://www.youtube.com/channel/${youtubeChannelId}`,
+    };
+  }
 
   const bilibiliSpaceMid = getBilibiliMidFromSpaceUrl(url);
 
@@ -269,7 +298,9 @@ export async function previewFeed(inputUrl: string): Promise<FeedPreview> {
   const resolved = await resolveFeedInput(inputUrl);
 
   if (resolved.platform === "bilibili" && isBilibiliAdapterUrl(resolved.feedUrl)) {
-    const feed = await fetchBilibiliArchiveFeed(resolved.feedUrl).catch((error) => {
+    const feed = await fetchBilibiliArchiveFeed(resolved.feedUrl, {
+      maxPages: 1,
+    }).catch((error) => {
       if (isBilibiliRiskControlError(error)) {
         return null;
       }
@@ -355,10 +386,23 @@ export async function fetchNormalizedItems(feedUrl: string) {
   const feed = await parseFeedUrl(resolved.feedUrl);
   const platform = resolved.platform;
   const mediaType = getMediaType(platform);
-
-  return feed.items.map((item) =>
+  const normalizedItems = feed.items.map((item) =>
     normalizeItem(item as ParsedItem, platform, mediaType),
   );
+
+  if (platform === "youtube") {
+    const channelId = getYouTubeChannelIdFromFeedUrl(resolved.feedUrl);
+
+    if (channelId) {
+      const pageVideos = await fetchYouTubeChannelVideos(channelId).catch(() => []);
+      return mergeYouTubeItems(
+        normalizedItems,
+        pageVideos.map(normalizeYouTubePageVideo),
+      );
+    }
+  }
+
+  return normalizedItems;
 }
 
 export function normalizeItem(
@@ -596,7 +640,10 @@ async function parseFeedUrl(feedUrl: string): Promise<ParsedFeed> {
   };
 }
 
-async function fetchBilibiliArchiveFeed(feedUrl: string): Promise<BilibiliArchiveFeed> {
+async function fetchBilibiliArchiveFeed(
+  feedUrl: string,
+  input?: { maxPages?: number },
+): Promise<BilibiliArchiveFeed> {
   const mid = getBilibiliMidFromAdapterUrl(feedUrl);
 
   if (!mid) {
@@ -605,77 +652,72 @@ async function fetchBilibiliArchiveFeed(feedUrl: string): Promise<BilibiliArchiv
 
   const { bilibiliCookie } = await getFeedSettings();
   const wbiKeys = await fetchBilibiliWbiKeys(bilibiliCookie);
-  const response = await fetch(buildBilibiliArchiveApiUrl(mid, wbiKeys), {
-    headers: cleanHeaders({
-      Accept: "application/json",
-      Cookie: bilibiliCookie,
-      Referer: `https://space.bilibili.com/${mid}`,
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-    }),
-  });
+  const videos: BilibiliArchiveVideo[] = [];
+  let title: string | null = null;
+  let totalCount: number | null = null;
 
-  if (!response.ok) {
-    const error = new Error(`Bilibili API 返回 ${response.status}。`);
+  const maxPages = input?.maxPages ?? BILIBILI_ARCHIVE_MAX_PAGES;
 
-    if (isBilibiliRiskControlError(error)) {
-      return fetchBilibiliAppArchiveFeed(mid);
-    }
-
-    throw error;
-  }
-
-  const payload = (await response.json()) as BilibiliArchivePayload;
-
-  if (payload.code !== 0) {
-    const error = new Error(
-      payload.message || `Bilibili API 返回错误码 ${payload.code}。`,
+  for (let page = 1; page <= maxPages; page += 1) {
+    const response = await fetch(
+      buildBilibiliArchiveApiUrl(mid, wbiKeys, {
+        page,
+        pageSize: BILIBILI_ARCHIVE_PAGE_SIZE,
+      }),
+      {
+        headers: cleanHeaders({
+          Accept: "application/json",
+          Cookie: bilibiliCookie,
+          Referer: `https://space.bilibili.com/${mid}`,
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+        }),
+      },
     );
 
-    if (isBilibiliRiskControlError(error)) {
-      return fetchBilibiliAppArchiveFeed(mid);
+    if (!response.ok) {
+      const error = new Error(`Bilibili API 返回 ${response.status}。`);
+
+      if (isBilibiliRiskControlError(error)) {
+        return fetchBilibiliAppArchiveFeed(mid, { maxPages });
+      }
+
+      throw error;
     }
 
-    throw error;
+    const payload = (await response.json()) as BilibiliArchivePayload;
+
+    if (payload.code !== 0) {
+      const error = new Error(
+        payload.message || `Bilibili API 返回错误码 ${payload.code}。`,
+      );
+
+      if (isBilibiliRiskControlError(error)) {
+        return fetchBilibiliAppArchiveFeed(mid, { maxPages });
+      }
+
+      throw error;
+    }
+
+    title = title || payload.data?.info?.name || null;
+    totalCount = payload.data?.page?.count ?? totalCount;
+
+    const pageVideos = payload.data?.list?.vlist ?? [];
+
+    if (pageVideos.length === 0) {
+      break;
+    }
+
+    videos.push(...pageVideos);
+
+    if (totalCount !== null && videos.length >= totalCount) {
+      break;
+    }
+
+    if (totalCount === null && pageVideos.length < BILIBILI_ARCHIVE_PAGE_SIZE) {
+      break;
+    }
   }
-
-  return {
-    mid,
-    title: payload.data?.info?.name || `Bilibili UP ${mid}`,
-    siteUrl: `https://space.bilibili.com/${mid}`,
-    videos: payload.data?.list?.vlist ?? [],
-  };
-}
-
-async function fetchBilibiliAppArchiveFeed(mid: string): Promise<BilibiliArchiveFeed> {
-  const response = await fetch(buildBilibiliAppArchiveApiUrl(mid), {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": BILIBILI_APP_USER_AGENT,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Bilibili APP API 返回 ${response.status}。`);
-  }
-
-  const payload = (await response.json()) as BilibiliAppArchivePayload;
-
-  if (payload.code !== 0) {
-    throw new Error(
-      payload.message || `Bilibili APP API 返回错误码 ${payload.code}。`,
-    );
-  }
-
-  const videos = (payload.data?.item ?? []).map((video) => ({
-    bvid: video.bvid,
-    aid: video.param ? Number(video.param) : undefined,
-    title: video.title,
-    description: video.subtitle || video.tname || "",
-    pic: video.cover,
-    created: video.ctime,
-  }));
-  const title = payload.data?.item?.find((video) => video.author)?.author;
 
   return {
     mid,
@@ -685,7 +727,83 @@ async function fetchBilibiliAppArchiveFeed(mid: string): Promise<BilibiliArchive
   };
 }
 
-function buildBilibiliAppArchiveApiUrl(mid: string) {
+async function fetchBilibiliAppArchiveFeed(
+  mid: string,
+  input?: { maxPages?: number },
+): Promise<BilibiliArchiveFeed> {
+  const videos: BilibiliArchiveVideo[] = [];
+  let title: string | null = null;
+  let totalCount: number | null = null;
+
+  const maxPages = input?.maxPages ?? BILIBILI_ARCHIVE_MAX_PAGES;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const response = await fetch(
+      buildBilibiliAppArchiveApiUrl(mid, {
+        page,
+        pageSize: BILIBILI_ARCHIVE_PAGE_SIZE,
+      }),
+      {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": BILIBILI_APP_USER_AGENT,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Bilibili APP API 返回 ${response.status}。`);
+    }
+
+    const payload = (await response.json()) as BilibiliAppArchivePayload;
+
+    if (payload.code !== 0) {
+      throw new Error(
+        payload.message || `Bilibili APP API 返回错误码 ${payload.code}。`,
+      );
+    }
+
+    totalCount = payload.data?.count ?? totalCount;
+
+    const pageVideos = payload.data?.item ?? [];
+
+    if (pageVideos.length === 0) {
+      break;
+    }
+
+    title = title || pageVideos.find((video) => video.author)?.author || null;
+    videos.push(
+      ...pageVideos.map((video) => ({
+        bvid: video.bvid,
+        aid: video.param ? Number(video.param) : undefined,
+        title: video.title,
+        description: video.subtitle || video.tname || "",
+        pic: video.cover,
+        created: video.ctime,
+      })),
+    );
+
+    if (totalCount !== null && videos.length >= totalCount) {
+      break;
+    }
+
+    if (totalCount === null && pageVideos.length < BILIBILI_ARCHIVE_PAGE_SIZE) {
+      break;
+    }
+  }
+
+  return {
+    mid,
+    title: title || `Bilibili UP ${mid}`,
+    siteUrl: `https://space.bilibili.com/${mid}`,
+    videos,
+  };
+}
+
+function buildBilibiliAppArchiveApiUrl(
+  mid: string,
+  input: { page: number; pageSize: number },
+) {
   const signedParams = signBilibiliAppParams({
     appkey: BILIBILI_APP_KEY,
     build: BILIBILI_APP_BUILD,
@@ -693,8 +811,8 @@ function buildBilibiliAppArchiveApiUrl(mid: string) {
     platform: "android",
     ts: Math.round(Date.now() / 1000).toString(),
     vmid: mid,
-    pn: "1",
-    ps: "20",
+    pn: String(input.page),
+    ps: String(input.pageSize),
   });
 
   return `https://app.bilibili.com/x/v2/space/archive?${signedParams}`;
@@ -712,13 +830,17 @@ function signBilibiliAppParams(params: Record<string, string>) {
   return `${query}&sign=${sign}`;
 }
 
-function buildBilibiliArchiveApiUrl(mid: string, wbiKeys: string) {
+function buildBilibiliArchiveApiUrl(
+  mid: string,
+  wbiKeys: string,
+  input: { page: number; pageSize: number },
+) {
   const signedParams = signBilibiliWbiParams(
     {
       mid,
-      ps: "20",
+      ps: String(input.pageSize),
       tid: "0",
-      pn: "1",
+      pn: String(input.page),
       keyword: "",
       order: "pubdate",
       platform: "web",
@@ -849,6 +971,501 @@ function normalizeBilibiliImageUrl(pic?: string) {
   return pic;
 }
 
+async function fetchYouTubeChannelVideos(channelId: string) {
+  const pageUrl = `https://www.youtube.com/channel/${channelId}/videos`;
+  const response = await fetch(pageUrl, {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent": YOUTUBE_USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`YouTube 频道视频页访问失败: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const apiKey = extractYouTubeConfigValue(html, "INNERTUBE_API_KEY");
+  const clientVersion =
+    extractYouTubeConfigValue(html, "INNERTUBE_CLIENT_VERSION") ||
+    "2.20240601.00.00";
+  const initialData = extractJsonObjectAfterMarker(html, "var ytInitialData =");
+
+  if (!initialData) {
+    throw new Error("无法解析 YouTube 视频页数据。");
+  }
+
+  let videos = collectYouTubeVideos(initialData);
+  const seenTokens = new Set<string>();
+  let continuations = collectYouTubeContinuations(initialData);
+
+  if (!apiKey) {
+    return videos;
+  }
+
+  for (
+    let page = 1;
+    continuations.length > 0 &&
+    videos.length < YOUTUBE_TARGET_SUPPLEMENTAL_VIDEO_COUNT &&
+    page <= YOUTUBE_CONTINUATION_MAX_PAGES;
+    page += 1
+  ) {
+    const nextPage = await fetchNextYouTubeVideoPage(
+      apiKey,
+      clientVersion,
+      continuations,
+      seenTokens,
+      new Set(videos.map((video) => video.videoId)),
+    );
+
+    if (!nextPage) {
+      break;
+    }
+
+    videos = dedupeYouTubePageVideos([...videos, ...nextPage.videos]);
+    continuations = nextPage.continuations;
+  }
+
+  return dedupeYouTubePageVideos(videos);
+}
+
+async function fetchNextYouTubeVideoPage(
+  apiKey: string,
+  clientVersion: string,
+  continuations: string[],
+  seenTokens: Set<string>,
+  seenVideoIds: Set<string>,
+) {
+  for (const continuation of continuations) {
+    if (seenTokens.has(continuation)) {
+      continue;
+    }
+
+    seenTokens.add(continuation);
+
+    const payload = await fetchYouTubeContinuation(
+      apiKey,
+      clientVersion,
+      continuation,
+    );
+    const videos = collectYouTubeVideos(payload);
+    const hasNewVideo = videos.some((video) => !seenVideoIds.has(video.videoId));
+
+    if (hasNewVideo) {
+      return {
+        videos,
+        continuations: collectYouTubeContinuations(payload),
+      };
+    }
+  }
+
+  return null;
+}
+
+async function fetchYouTubeContinuation(
+  apiKey: string,
+  clientVersion: string,
+  continuation: string,
+) {
+  const response = await fetch(
+    `https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": YOUTUBE_USER_AGENT,
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion,
+          },
+        },
+        continuation,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`YouTube continuation 请求失败: ${response.status}`);
+  }
+
+  return response.json() as Promise<unknown>;
+}
+
+function normalizeYouTubePageVideo(video: YouTubePageVideo): NormalizedItem {
+  const contentUrl = `https://www.youtube.com/watch?v=${video.videoId}`;
+
+  return {
+    externalId: `yt:video:${video.videoId}`,
+    title: video.title,
+    author: video.author,
+    contentUrl,
+    publishedAt: null,
+    summary: video.publishedText,
+    contentHtml: null,
+    thumbnailUrl:
+      normalizeYouTubeThumbnailUrl(video.thumbnailUrl) ||
+      buildFallbackThumbnailUrl("youtube", contentUrl),
+    mediaType: "video",
+    platform: "youtube",
+    embedUrl: buildEmbedUrl("youtube", contentUrl),
+    rawPayload: JSON.stringify(video),
+  };
+}
+
+function mergeYouTubeItems(
+  rssItems: NormalizedItem[],
+  pageItems: NormalizedItem[],
+) {
+  const merged = new Map<string, NormalizedItem>();
+
+  for (const item of rssItems) {
+    merged.set(getYouTubeItemMergeKey(item), item);
+  }
+
+  for (const item of pageItems) {
+    const key = getYouTubeItemMergeKey(item);
+
+    if (!merged.has(key)) {
+      merged.set(key, item);
+    }
+  }
+
+  return [...merged.values()];
+}
+
+function getYouTubeItemMergeKey(item: NormalizedItem) {
+  const videoId =
+    getYouTubeVideoId(item.externalId) ||
+    getYouTubeVideoId(item.contentUrl) ||
+    (item.embedUrl ? getYouTubeVideoId(item.embedUrl) : null);
+
+  return videoId || item.externalId || item.contentUrl;
+}
+
+function collectYouTubeVideos(value: unknown): YouTubePageVideo[] {
+  const videos: YouTubePageVideo[] = [];
+
+  visitJson(value, (node, key) => {
+    if (!isRecord(node)) {
+      return;
+    }
+
+    if (key === "videoRenderer") {
+      const video = getYouTubeRendererVideo(node);
+
+      if (video) {
+        videos.push(video);
+      }
+    } else if (key === "lockupViewModel") {
+      const video = getYouTubeLockupVideo(node);
+
+      if (video) {
+        videos.push(video);
+      }
+    }
+  });
+
+  return dedupeYouTubePageVideos(videos);
+}
+
+function getYouTubeRendererVideo(
+  node: Record<string, unknown>,
+): YouTubePageVideo | null {
+  const videoId = typeof node.videoId === "string" ? node.videoId : "";
+  const title = getYouTubeText(node.title);
+
+  if (!videoId || !title) {
+    return null;
+  }
+
+  return {
+    videoId,
+    title,
+    author:
+      getYouTubeText(node.ownerText) ||
+      getYouTubeText(node.shortBylineText) ||
+      null,
+    publishedText: getYouTubeText(node.publishedTimeText) || null,
+    thumbnailUrl: getYouTubeThumbnail(node.thumbnail),
+  };
+}
+
+function getYouTubeLockupVideo(
+  node: Record<string, unknown>,
+): YouTubePageVideo | null {
+  const videoId =
+    getStringField(node.contentId) || findYouTubeVideoIdInValue(node);
+  const title = getLockupTitle(node);
+
+  if (!videoId || !title) {
+    return null;
+  }
+
+  return {
+    videoId,
+    title,
+    author: null,
+    publishedText: getLockupPublishedText(node),
+    thumbnailUrl: getLockupThumbnail(node),
+  };
+}
+
+function collectYouTubeContinuations(value: unknown): string[] {
+  const tokens: string[] = [];
+
+  visitJson(value, (node, key) => {
+    if (key !== "continuationCommand" || !isRecord(node)) {
+      return;
+    }
+
+    if (typeof node.token === "string" && node.token) {
+      tokens.push(node.token);
+    }
+  });
+
+  return [...new Set(tokens)];
+}
+
+function dedupeYouTubePageVideos(videos: YouTubePageVideo[]) {
+  const deduped = new Map<string, YouTubePageVideo>();
+
+  for (const video of videos) {
+    if (!deduped.has(video.videoId)) {
+      deduped.set(video.videoId, video);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+function extractYouTubeConfigValue(html: string, key: string) {
+  const pattern = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`);
+  const match = html.match(pattern);
+
+  return match?.[1] ? decodeJsonString(match[1]) : null;
+}
+
+function extractJsonObjectAfterMarker(html: string, marker: string) {
+  const markerIndex = html.indexOf(marker);
+
+  if (markerIndex === -1) {
+    return null;
+  }
+
+  const startIndex = html.indexOf("{", markerIndex);
+
+  if (startIndex === -1) {
+    return null;
+  }
+
+  const endIndex = findJsonObjectEnd(html, startIndex);
+
+  if (endIndex === -1) {
+    return null;
+  }
+
+  return JSON.parse(html.slice(startIndex, endIndex + 1)) as unknown;
+}
+
+function findJsonObjectEnd(source: string, startIndex: number) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function visitJson(
+  value: unknown,
+  visitor: (node: unknown, key: string | null) => void,
+  key: string | null = null,
+) {
+  visitor(value, key);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      visitJson(item, visitor, null);
+    }
+
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  for (const [childKey, childValue] of Object.entries(value)) {
+    visitJson(childValue, visitor, childKey);
+  }
+}
+
+function getYouTubeText(value: unknown): string {
+  if (!isRecord(value)) {
+    return "";
+  }
+
+  if (typeof value.content === "string") {
+    return value.content;
+  }
+
+  if (typeof value.simpleText === "string") {
+    return value.simpleText;
+  }
+
+  if (Array.isArray(value.runs)) {
+    return value.runs
+      .map((run) => (isRecord(run) && typeof run.text === "string" ? run.text : ""))
+      .join("")
+      .trim();
+  }
+
+  return "";
+}
+
+function getYouTubeThumbnail(value: unknown) {
+  if (!isRecord(value) || !Array.isArray(value.thumbnails)) {
+    return null;
+  }
+
+  const thumbnails = value.thumbnails.filter(
+    (thumbnail): thumbnail is { url: string } =>
+      isRecord(thumbnail) && typeof thumbnail.url === "string",
+  );
+
+  return thumbnails.at(-1)?.url || null;
+}
+
+function getLockupTitle(node: Record<string, unknown>) {
+  const metadata = getRecordField(node.metadata);
+  const lockupMetadata = getRecordField(metadata?.lockupMetadataViewModel);
+  const title = getYouTubeText(lockupMetadata?.title);
+
+  return title || getYouTubeText(node.title);
+}
+
+function getLockupPublishedText(node: Record<string, unknown>) {
+  const metadata = getRecordField(node.metadata);
+  const lockupMetadata = getRecordField(metadata?.lockupMetadataViewModel);
+  const metadataContainer = getRecordField(lockupMetadata?.metadata);
+  const contentMetadata = getRecordField(
+    metadataContainer?.contentMetadataViewModel,
+  );
+  const rows = Array.isArray(contentMetadata?.metadataRows)
+    ? contentMetadata.metadataRows
+    : [];
+  const partsText = rows.flatMap((row) => {
+    const rowRecord = getRecordField(row);
+    const parts = Array.isArray(rowRecord?.metadataParts)
+      ? rowRecord.metadataParts
+      : [];
+
+    return parts
+      .map((part) => getYouTubeText(getRecordField(part)?.text))
+      .filter(Boolean);
+  });
+
+  return (
+    partsText.find((text) =>
+      /ago|streamed|premiered|前|小时前|分钟前|天前|周前|月前|年前/i.test(text),
+    ) ||
+    partsText.at(-1) ||
+    null
+  );
+}
+
+function getLockupThumbnail(node: Record<string, unknown>) {
+  const contentImage = getRecordField(node.contentImage);
+  const thumbnailViewModel = getRecordField(contentImage?.thumbnailViewModel);
+  const image = getRecordField(thumbnailViewModel?.image);
+  const sources = Array.isArray(image?.sources) ? image.sources : [];
+  const source = sources
+    .filter(
+      (candidate): candidate is { url: string; width?: number } =>
+        isRecord(candidate) && typeof candidate.url === "string",
+    )
+    .sort((left, right) => (right.width ?? 0) - (left.width ?? 0))[0];
+
+  return source?.url || null;
+}
+
+function findYouTubeVideoIdInValue(value: unknown) {
+  let videoId: string | null = null;
+
+  visitJson(value, (node, key) => {
+    if (videoId || key !== "watchEndpoint" || !isRecord(node)) {
+      return;
+    }
+
+    videoId = getStringField(node.videoId);
+  });
+
+  return videoId;
+}
+
+function normalizeYouTubeThumbnailUrl(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  if (value.startsWith("//")) {
+    return `https:${value}`;
+  }
+
+  return value;
+}
+
+function decodeJsonString(value: string) {
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return value;
+  }
+}
+
+function getRecordField(value: unknown) {
+  return isRecord(value) ? value : null;
+}
+
+function getStringField(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object");
+}
+
 function getMediaType(platform: FeedPlatform): FeedMediaType {
   if (platform === "youtube" || platform === "bilibili") {
     return "video";
@@ -966,6 +1583,23 @@ function isYouTubeUrl(url: URL) {
     url.hostname === "m.youtube.com" ||
     url.hostname === "youtu.be"
   );
+}
+
+function getYouTubeChannelIdFromFeedUrl(feedUrl: string) {
+  try {
+    const url = new URL(feedUrl);
+
+    if (
+      !url.hostname.endsWith("youtube.com") ||
+      url.pathname !== "/feeds/videos.xml"
+    ) {
+      return null;
+    }
+
+    return url.searchParams.get("channel_id");
+  } catch {
+    return null;
+  }
 }
 
 async function resolveYouTubeChannel(input: string) {
