@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  BadgeCheck,
+  BarChart3,
   Bookmark,
   Bot,
   Check,
@@ -15,7 +17,9 @@ import {
   Filter,
   Folder,
   FolderOpen,
+  Heart,
   Layers3,
+  MessageCircle,
   Monitor,
   Moon,
   MoreVertical,
@@ -23,6 +27,7 @@ import {
   Plus,
   Power,
   RefreshCcw,
+  Repeat2,
   Rss,
   Save,
   Search,
@@ -67,16 +72,38 @@ type FeedItem = {
   bodyText: string;
   platform: string;
   time: string;
+  publishedAt: string | null;
   read: boolean;
   favorite: boolean;
   readLater: boolean;
   thumbnail?: string;
   contentUrl: string;
+  contentHtml: string | null;
+  rawPayload: string | null;
   embedUrl?: string;
   aiSummary?: string;
   duration?: string;
   reactions?: number;
   comments?: number;
+};
+
+type TwitterMediaItem = {
+  type: "photo" | "video";
+  url: string;
+  posterUrl: string | null;
+};
+
+type TwitterMeta = {
+  authorName: string | null;
+  screenName: string | null;
+  avatarUrl: string | null;
+  createdAt: string | null;
+  metrics?: {
+    replies?: number | null;
+    reposts?: number | null;
+    likes?: number | null;
+    views?: number | null;
+  };
 };
 
 type SourceItem = {
@@ -108,6 +135,7 @@ type ApiItem = {
   mediaType: string;
   platform: string;
   embedUrl: string | null;
+  rawPayload: string | null;
   subscription: {
     id: string;
     title: string;
@@ -264,11 +292,14 @@ function toFeedItem(item: ApiItem): FeedItem {
       "No detailed text is available for this item yet.",
     platform: item.platform,
     time: formatRelativeTime(item.publishedAt),
+    publishedAt: item.publishedAt,
     read: item.state?.isRead ?? false,
     favorite: item.state?.isFavorite ?? false,
     readLater: item.state?.isReadLater ?? false,
     thumbnail: item.thumbnailUrl || undefined,
     contentUrl: item.contentUrl,
+    contentHtml: item.contentHtml,
+    rawPayload: item.rawPayload,
     embedUrl: item.embedUrl || undefined,
     aiSummary: item.aiSummary?.summaryText,
     reactions: type === "Update" ? 12 : undefined,
@@ -439,6 +470,17 @@ function getRequestErrorMessage(error: unknown, fallback: string) {
   }
 
   return error instanceof Error ? error.message : fallback;
+}
+
+function isTwitterSubscriptionInput(value: string) {
+  const trimmed = value.trim().toLowerCase();
+
+  return (
+    trimmed.startsWith("rsshub://twitter/") ||
+    trimmed.includes("/twitter/") ||
+    trimmed.includes("twitter.com/") ||
+    trimmed.includes("x.com/")
+  );
 }
 
 function copyTextFallback(value: string) {
@@ -1123,6 +1165,7 @@ export default function Home() {
     setPreviewError("");
 
     try {
+      const timeoutMs = isTwitterSubscriptionInput(subscriptionInput) ? 45000 : 15000;
       const response = await fetchWithTimeout(
         "/api/subscriptions/preview",
         {
@@ -1130,7 +1173,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ inputUrl: subscriptionInput }),
         },
-        15000,
+        timeoutMs,
       );
       const json = (await response.json()) as {
         preview?: PreviewResult;
@@ -1155,6 +1198,7 @@ export default function Home() {
     setPreviewError("");
 
     try {
+      const timeoutMs = isTwitterSubscriptionInput(subscriptionInput) ? 60000 : 20000;
       const response = await fetchWithTimeout(
         "/api/subscriptions",
         {
@@ -1162,7 +1206,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ inputUrl: subscriptionInput }),
         },
-        20000,
+        timeoutMs,
       );
       const json = (await response.json()) as SubscriptionActionResponse;
 
@@ -2648,6 +2692,10 @@ function DetailPanel({
 function ContentBlock({ item }: { item: FeedItem }) {
   const body = item.bodyText || item.excerpt;
 
+  if (item.platform === "twitter") {
+    return <TwitterContentBlock item={item} body={body} />;
+  }
+
   return (
     <section className="mt-7 rounded-md border border-[#cfd4dc] bg-white p-7">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2676,6 +2724,515 @@ function ContentBlock({ item }: { item: FeedItem }) {
       ) : null}
     </section>
   );
+}
+
+function TwitterContentBlock({ item, body }: { item: FeedItem; body: string }) {
+  const media = getTwitterMediaItems(item);
+  const meta = getTwitterMeta(item);
+  const displayName = meta.authorName || item.source.replace(/^Twitter @/, "") || "Twitter";
+  const screenName =
+    meta.screenName || getTwitterScreenNameFromUrl(item.contentUrl) || displayName;
+  const displayText = getTwitterDisplayText(item, body);
+  const metrics = meta.metrics || {};
+  const hasMetrics = [metrics.replies, metrics.reposts, metrics.likes, metrics.views].some(
+    (value) => typeof value === "number",
+  );
+
+  return (
+    <section className="mt-7 rounded-md border border-[#cfd4dc] bg-white px-6 py-6">
+      <div className="flex gap-4">
+        <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-[#e8ecf1]">
+          {meta.avatarUrl ? (
+            // Remote profile images need referrerPolicy and come from Twitter CDN.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={meta.avatarUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-lg font-bold text-[#536171]">
+              {displayName.slice(0, 1).toUpperCase()}
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[19px] font-bold leading-tight text-[#1f2630]">
+              {displayName}
+            </span>
+            {isTwitterVerified(item.rawPayload) ? (
+              <BadgeCheck size={18} fill="#1d9bf0" className="text-white" />
+            ) : null}
+            <span className="text-[17px] font-semibold leading-tight text-[#647080]">
+              @{screenName}
+            </span>
+            <span className="text-[#8a94a3]">·</span>
+            <span className="text-[16px] font-semibold leading-tight text-[#647080]">
+              {formatTweetDate(item.publishedAt || meta.createdAt)}
+            </span>
+            <a
+              href={item.contentUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto text-[14px] font-bold text-[#34495f] underline-offset-4 hover:underline"
+            >
+              Open on X
+            </a>
+          </div>
+
+          <div className="mt-4 whitespace-pre-wrap text-[20px] font-medium leading-9 text-[#151a21]">
+            {renderLinkedText(displayText, item.contentUrl)}
+          </div>
+
+          {media.length ? (
+            <div
+              className={
+                media.length === 1
+                  ? "mt-6 grid gap-3"
+                  : "mt-6 grid gap-3 sm:grid-cols-2"
+              }
+            >
+              {media.map((mediaItem, index) => (
+                <TwitterMediaPreview
+                  key={`${mediaItem.url}-${index}`}
+                  item={item}
+                  media={mediaItem}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          {hasMetrics ? (
+            <div className="mt-5 grid grid-cols-4 gap-3 text-[15px] font-semibold text-[#596675]">
+              <TwitterMetric icon={<MessageCircle size={20} />} value={metrics.replies} />
+              <TwitterMetric icon={<Repeat2 size={20} />} value={metrics.reposts} />
+              <TwitterMetric icon={<Heart size={20} />} value={metrics.likes} />
+              <TwitterMetric icon={<BarChart3 size={20} />} value={metrics.views} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TwitterMetric({
+  icon,
+  value,
+}: {
+  icon: ReactNode;
+  value: number | null | undefined;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {icon}
+      <span>{typeof value === "number" ? formatTwitterCompactCount(value) : "-"}</span>
+    </div>
+  );
+}
+
+function TwitterMediaPreview({
+  item,
+  media,
+}: {
+  item: FeedItem;
+  media: TwitterMediaItem;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (media.type === "video") {
+    return (
+      <div className="overflow-hidden rounded-md border border-[#cfd4dc] bg-[#111827]">
+        {failed ? (
+          <button
+            type="button"
+            onClick={() => window.open(item.contentUrl, "_blank", "noopener,noreferrer")}
+            className="relative flex aspect-video w-full items-center justify-center bg-[#d7d2cb] text-[#243142]"
+          >
+            {media.posterUrl ? (
+              // Remote feed covers need referrerPolicy and come from many domains.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={media.posterUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            ) : null}
+            <span className="relative flex h-16 w-16 items-center justify-center rounded-full bg-black/55 text-white">
+              <CirclePlay size={34} />
+            </span>
+          </button>
+        ) : (
+          <video
+            controls
+            preload="metadata"
+            poster={media.posterUrl || undefined}
+            className="aspect-video w-full bg-black object-contain"
+            onError={() => setFailed(true)}
+          >
+            <source src={media.url} type="video/mp4" />
+          </video>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={media.url}
+      target="_blank"
+      rel="noreferrer"
+      className="block overflow-hidden rounded-md border border-[#cfd4dc] bg-[#f4f5f6]"
+    >
+      {/* Remote feed images need referrerPolicy and come from many domains. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={media.url}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        className="max-h-[720px] w-full object-contain"
+      />
+    </a>
+  );
+}
+
+function getTwitterMediaItems(item: FeedItem) {
+  const media = new Map<string, TwitterMediaItem>();
+
+  for (const mediaItem of getTwitterMediaPayload(item.contentHtml)) {
+    media.set(mediaItem.url, mediaItem);
+  }
+
+  for (const mediaItem of getTwitterMediaFromHtml(item.contentHtml)) {
+    media.set(mediaItem.url, mediaItem);
+  }
+
+  if (item.thumbnail && !media.has(item.thumbnail)) {
+    media.set(item.thumbnail, {
+      type: "photo",
+      url: item.thumbnail,
+      posterUrl: null,
+    });
+  }
+
+  return [...media.values()];
+}
+
+function getTwitterMeta(item: FeedItem): TwitterMeta {
+  return (
+    getTwitterMetaPayload(item.contentHtml) ||
+    getTwitterMetaFromRawPayload(item.rawPayload) || {
+      authorName: item.source.replace(/^Twitter @/, "") || null,
+      screenName: getTwitterScreenNameFromUrl(item.contentUrl),
+      avatarUrl: null,
+      createdAt: item.publishedAt,
+      metrics: {},
+    }
+  );
+}
+
+function getTwitterMetaPayload(contentHtml: string | null): TwitterMeta | null {
+  const encoded = contentHtml?.match(/data-lxy-twitter-meta="([^"]+)"/)?.[1];
+
+  if (!encoded) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(encoded)) as TwitterMeta;
+
+    return {
+      authorName: typeof parsed.authorName === "string" ? parsed.authorName : null,
+      screenName: typeof parsed.screenName === "string" ? parsed.screenName : null,
+      avatarUrl: typeof parsed.avatarUrl === "string" ? parsed.avatarUrl : null,
+      createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : null,
+      metrics: isRecord(parsed.metrics) ? parsed.metrics : {},
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getTwitterMetaFromRawPayload(rawPayload: string | null): TwitterMeta | null {
+  const raw = parseJsonRecord(rawPayload);
+
+  if (!raw) {
+    return null;
+  }
+
+  const legacy = getRecordField(raw.legacy);
+  const user = getRecordField(raw.user);
+  const core = getRecordField(raw.core);
+  const userResult = getRecordField(getRecordField(core?.user_results)?.result);
+  const userCore = getRecordField(userResult?.core);
+  const userLegacy = getRecordField(userResult?.legacy);
+  const avatar = getRecordField(userResult?.avatar);
+  const avatarImage = getRecordField(avatar?.image_url);
+  const views = getRecordField(raw.views);
+
+  return {
+    authorName:
+      getStringField(user?.name) ||
+      getStringField(userCore?.name) ||
+      getStringField(userLegacy?.name),
+    screenName:
+      getStringField(user?.screen_name) ||
+      getStringField(userCore?.screen_name) ||
+      getStringField(userLegacy?.screen_name),
+    avatarUrl:
+      getStringField(user?.profile_image_url_https) ||
+      getStringField(avatarImage?.url) ||
+      getStringField(avatar?.image_url) ||
+      getStringField(userLegacy?.profile_image_url_https),
+    createdAt:
+      getStringField(raw.created_at) ||
+      getStringField(legacy?.created_at),
+    metrics: {
+      replies: getNumberField(raw.reply_count) || getNumberField(legacy?.reply_count),
+      reposts: getNumberField(raw.retweet_count) || getNumberField(legacy?.retweet_count),
+      likes: getNumberField(raw.favorite_count) || getNumberField(legacy?.favorite_count),
+      views: getNumberField(views?.count) || getNumberField(raw.view_count),
+    },
+  };
+}
+
+function getTwitterDisplayText(item: FeedItem, fallback: string) {
+  return (
+    cleanTwitterText(getTwitterRawText(item.rawPayload) || "", item.contentUrl) ||
+    cleanTwitterText(getTwitterTextFromHtml(item.contentHtml), item.contentUrl) ||
+    cleanTwitterText(fallback, item.contentUrl) ||
+    item.title
+  );
+}
+
+function getTwitterRawText(rawPayload: string | null) {
+  const raw = parseJsonRecord(rawPayload);
+
+  if (!raw) {
+    return "";
+  }
+
+  const legacy = getRecordField(raw.legacy);
+  const noteTweet = getRecordField(raw.note_tweet);
+  const noteTweetResult = getRecordField(
+    getRecordField(noteTweet?.note_tweet_results)?.result,
+  );
+
+  return (
+    getStringField(noteTweetResult?.text) ||
+    getStringField(raw.full_text) ||
+    getStringField(raw.text) ||
+    getStringField(legacy?.full_text) ||
+    getStringField(legacy?.text) ||
+    ""
+  );
+}
+
+function getTwitterTextFromHtml(contentHtml: string | null) {
+  if (!contentHtml) {
+    return "";
+  }
+
+  return decodeHtmlAttribute(
+    contentHtml
+      .replace(/<template[\s\S]*?<\/template>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  );
+}
+
+function cleanTwitterText(value: string, contentUrl: string) {
+  return value
+    .replace(/\s*Open on X\s*$/i, "")
+    .replace(contentUrl, "")
+    .trim();
+}
+
+function getTwitterScreenNameFromUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const [, screenName] = url.pathname.split("/");
+
+    return screenName || null;
+  } catch {
+    return null;
+  }
+}
+
+function isTwitterVerified(rawPayload: string | null) {
+  const raw = parseJsonRecord(rawPayload);
+  const user = getRecordField(raw?.user);
+  const core = getRecordField(raw?.core);
+  const userResult = getRecordField(getRecordField(core?.user_results)?.result);
+  const verification = getRecordField(userResult?.verification);
+
+  return (
+    raw?.is_blue_verified === true ||
+    user?.is_blue_verified === true ||
+    verification?.verified === true ||
+    verification?.verified_type === "Blue"
+  );
+}
+
+function formatTweetDate(value: string | null) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function formatTwitterCompactCount(value: number) {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  }
+
+  return String(value);
+}
+
+function parseJsonRecord(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return getRecordField(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function getTwitterMediaPayload(contentHtml: string | null) {
+  const encoded = contentHtml?.match(/data-lxy-twitter-media="([^"]+)"/)?.[1];
+
+  if (!encoded) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(encoded)) as TwitterMediaItem[];
+
+    return parsed.filter(
+      (item) =>
+        (item.type === "photo" || item.type === "video") &&
+        typeof item.url === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function getTwitterMediaFromHtml(contentHtml: string | null) {
+  if (!contentHtml) {
+    return [];
+  }
+
+  const media: TwitterMediaItem[] = [];
+
+  for (const match of contentHtml.matchAll(/<img[^>]+src=["']([^"']+)["'][^>]*>/gi)) {
+    media.push({
+      type: "photo",
+      url: decodeHtmlAttribute(match[1]),
+      posterUrl: null,
+    });
+  }
+
+  for (const match of contentHtml.matchAll(/<video[\s\S]*?<\/video>/gi)) {
+    const videoHtml = match[0];
+    const source =
+      videoHtml.match(/<source[^>]+src=["']([^"']+)["'][^>]*>/i)?.[1] ||
+      videoHtml.match(/\ssrc=["']([^"']+)["']/i)?.[1];
+    const poster = videoHtml.match(/\sposter=["']([^"']+)["']/i)?.[1];
+
+    if (source) {
+      media.push({
+        type: "video",
+        url: decodeHtmlAttribute(source),
+        posterUrl: poster ? decodeHtmlAttribute(poster) : null,
+      });
+    }
+  }
+
+  return media;
+}
+
+function decodeHtmlAttribute(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object");
+}
+
+function getRecordField(value: unknown) {
+  return isRecord(value) ? value : null;
+}
+
+function getStringField(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function getNumberField(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/,/g, ""));
+
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function renderLinkedText(value: string, contentUrl: string) {
+  const parts = value.split(/(https?:\/\/\S+)/g);
+
+  return parts.map((part, index) => {
+    if (!part.match(/^https?:\/\//)) {
+      return <span key={`${part}-${index}`}>{part}</span>;
+    }
+
+    const cleanUrl = part.replace(/[),.，。]+$/, "");
+    const suffix = part.slice(cleanUrl.length);
+    const href = part.includes("t.co/") ? contentUrl : cleanUrl;
+
+    return (
+      <span key={`${part}-${index}`}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="font-bold text-[#34495f] underline-offset-4 hover:underline"
+        >
+          {cleanUrl}
+        </a>
+        {suffix}
+      </span>
+    );
+  });
 }
 
 function VideoCoverImage({
@@ -3940,7 +4497,8 @@ function AddSubscriptionModal({
             Examples:{" "}
             <span className="text-[#334154]">
               rsshub://youtube/user/%40xiao_lin_shuo,
-              rsshub://weibo/user/2135129011
+              rsshub://weibo/user/2135129011,
+              rsshub://twitter/user/dotey
             </span>
           </p>
 

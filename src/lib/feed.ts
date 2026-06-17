@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import Parser from "rss-parser";
 import { getFeedSettings } from "./feed-settings.ts";
 
-export type FeedPlatform = "youtube" | "bilibili" | "weibo" | "rss";
+export type FeedPlatform = "youtube" | "bilibili" | "weibo" | "twitter" | "rss";
 export type FeedMediaType = "video" | "article" | "status";
 
 export type PreviewItem = {
@@ -60,6 +62,10 @@ const parser = new Parser({
 
 export const BILIBILI_RISK_CONTROL_MESSAGE =
   "Bilibili 返回风控拦截，当前匿名接口暂时无法抓取。请稍后重试，或配置可用的 RSSHub Base URL。";
+export const TWITTER_RSSHUB_CONFIG_MESSAGE =
+  "默认 RSSHub 公共实例暂不支持 Twitter 订阅，请在 Settings 配置支持 Twitter 的 RSSHub Base URL 后再试。";
+export const TWITTER_EMBEDDED_TIMELINE_MESSAGE =
+  "Twitter 内容暂时无法拉取，请稍后重试。";
 
 type ParsedItem = Parser.Item & {
   author?: string;
@@ -171,6 +177,44 @@ type YouTubePageVideo = {
   thumbnailUrl: string | null;
 };
 
+type TwitterEmbeddedTweet = {
+  id: string;
+  text: string;
+  authorName: string | null;
+  screenName: string;
+  avatarUrl: string | null;
+  createdAt: string | null;
+  thumbnailUrl: string | null;
+  media: TwitterMediaItem[];
+  metrics: TwitterTweetMetrics;
+  raw: unknown;
+};
+
+type TwitterMediaItem = {
+  type: "photo" | "video";
+  url: string;
+  posterUrl: string | null;
+};
+
+type TwitterTweetMetrics = {
+  replies: number | null;
+  reposts: number | null;
+  likes: number | null;
+  views: number | null;
+};
+
+type TwitterEmbeddedTimelineCacheEntry = {
+  tweets: TwitterEmbeddedTweet[];
+  expiresAt: number;
+  staleUntil: number;
+};
+
+type TwitterGraphqlQueryIds = {
+  UserByScreenName: string;
+  UserTweets: string;
+  UserHighlightsTweets: string;
+};
+
 const BILIBILI_APP_KEY = "1d8b6e7d45233436";
 const BILIBILI_APP_SECRET = "560c52ccd288fed045859ed18bffd973";
 const BILIBILI_APP_BUILD = "7420300";
@@ -182,6 +226,35 @@ const YOUTUBE_TARGET_SUPPLEMENTAL_VIDEO_COUNT = 120;
 const YOUTUBE_CONTINUATION_MAX_PAGES = 200;
 const YOUTUBE_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
+const TWITTER_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const TWITTER_EMBEDDED_ACCEPT =
+  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const TWITTER_ACCEPT_LANGUAGE = "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7";
+const TWITTER_EMBEDDED_TIMELINE_CACHE_TTL_MS = 10 * 60 * 1000;
+const TWITTER_EMBEDDED_TIMELINE_STALE_TTL_MS = 6 * 60 * 60 * 1000;
+const TWITTER_GRAPHQL_QUERY_ID_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const TWITTER_GRAPHQL_BEARER_TOKEN =
+  "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+const TWITTER_GRAPHQL_FALLBACK_QUERY_IDS: TwitterGraphqlQueryIds = {
+  UserByScreenName: "Yka-W8dz7RaEuQNkroPkYw",
+  UserTweets: "E3opETHurmVJflFsUBVuUQ",
+  UserHighlightsTweets: "W3_o6ulKbViS-IIJJYmzmQ",
+};
+const TWITTER_NITTER_RSS_BASE_URL = "https://nitter.perennialte.ch";
+const twitterEmbeddedTimelineCache = new Map<
+  string,
+  TwitterEmbeddedTimelineCacheEntry
+>();
+const twitterEmbeddedTimelineRequests = new Map<
+  string,
+  Promise<TwitterEmbeddedTweet[]>
+>();
+let twitterGraphqlQueryIdsCache:
+  | { ids: TwitterGraphqlQueryIds; expiresAt: number }
+  | null = null;
+let twitterGraphqlQueryIdsRequest: Promise<TwitterGraphqlQueryIds> | null = null;
+const execFileAsync = promisify(execFile);
 
 const BILIBILI_WBI_MIXIN_KEY_TABLE = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -337,7 +410,43 @@ export async function previewFeed(inputUrl: string): Promise<FeedPreview> {
     };
   }
 
-  const feed = await parseFeedUrl(resolved.feedUrl);
+  const feed = await parseFeedUrl(resolved.feedUrl).catch((error) => {
+    if (resolved.platform === "twitter") {
+      return null;
+    }
+
+    throw error;
+  });
+
+  if (resolved.platform === "twitter") {
+    if (feed?.items.length && shouldPreferTwitterRsshubFeed(resolved)) {
+      return buildParsedFeedPreview(resolved, feed);
+    }
+
+    const tweets = await fetchTwitterEmbeddedTimeline(resolved).catch((error) => {
+      if (feed?.items.length) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (tweets?.length) {
+      return buildTwitterEmbeddedPreview(resolved, tweets);
+    }
+
+    if (feed?.items.length) {
+      return buildParsedFeedPreview(resolved, feed);
+    }
+  }
+
+  if (!feed) {
+    if (resolved.platform === "twitter") {
+      throw new Error(TWITTER_EMBEDDED_TIMELINE_MESSAGE);
+    }
+
+    return buildTwitterFallbackPreview(resolved);
+  }
 
   return buildParsedFeedPreview(resolved, feed);
 }
@@ -383,8 +492,47 @@ export async function fetchNormalizedItems(feedUrl: string) {
     );
   }
 
-  const feed = await parseFeedUrl(resolved.feedUrl);
   const platform = resolved.platform;
+  const feed = await parseFeedUrl(resolved.feedUrl).catch((error) => {
+    if (platform === "twitter") {
+      return null;
+    }
+
+    throw error;
+  });
+
+  if (platform === "twitter") {
+    if (feed?.items.length && shouldPreferTwitterRsshubFeed(resolved)) {
+      return feed.items.map((item) =>
+        normalizeItem(item as ParsedItem, platform, getMediaType(platform)),
+      );
+    }
+
+    const tweets = await fetchTwitterEmbeddedTimeline(resolved).catch((error) => {
+      if (feed?.items.length) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (tweets?.length) {
+      return tweets.map(normalizeTwitterEmbeddedTweet);
+    }
+
+    if (feed?.items.length) {
+      return feed.items.map((item) =>
+        normalizeItem(item as ParsedItem, platform, getMediaType(platform)),
+      );
+    }
+
+    return [];
+  }
+
+  if (!feed) {
+    throw new Error("feed 解析失败。");
+  }
+
   const mediaType = getMediaType(platform);
   const normalizedItems = feed.items.map((item) =>
     normalizeItem(item as ParsedItem, platform, mediaType),
@@ -460,6 +608,18 @@ function inferSource(routeOrUrl: string): {
     };
   }
 
+  if (
+    routeOrUrl.includes("/twitter/") ||
+    routeOrUrl.includes("twitter.com") ||
+    routeOrUrl.includes("x.com")
+  ) {
+    return {
+      platform: "twitter",
+      domainKey: "twitter.com",
+      siteUrl: "https://twitter.com",
+    };
+  }
+
   try {
     const url = new URL(routeOrUrl);
     return {
@@ -530,6 +690,1019 @@ function buildBilibiliFallbackPreview(resolved: ResolvedFeedInput): FeedPreview 
     items: [],
     warning: BILIBILI_RISK_CONTROL_MESSAGE,
   };
+}
+
+function buildTwitterFallbackPreview(resolved: ResolvedFeedInput): FeedPreview {
+  const username = getTwitterUsernameFromRouteOrUrl(resolved.rsshubRoute || resolved.inputUrl);
+
+  return {
+    title: username ? `Twitter @${username}` : "Twitter Feed",
+    platform: "twitter",
+    sourceType: "twitter",
+    inputUrl: resolved.inputUrl,
+    feedUrl: resolved.feedUrl,
+    siteUrl: username ? `https://twitter.com/${username}` : resolved.siteUrl,
+    domainKey: resolved.domainKey,
+    rsshubRoute: resolved.rsshubRoute,
+    items: [],
+  };
+}
+
+function shouldPreferTwitterRsshubFeed(resolved: ResolvedFeedInput) {
+  return !isDefaultTwitterRsshubFeedUrl(resolved.feedUrl);
+}
+
+function isDefaultTwitterRsshubFeedUrl(feedUrl: string) {
+  try {
+    const url = new URL(feedUrl);
+
+    return url.hostname === "rsshub.app" || url.hostname === "www.rsshub.app";
+  } catch {
+    return false;
+  }
+}
+
+function buildTwitterEmbeddedPreview(
+  resolved: ResolvedFeedInput,
+  tweets: TwitterEmbeddedTweet[],
+): FeedPreview {
+  const username = tweets[0]?.screenName || getTwitterUsernameFromRouteOrUrl(
+    resolved.rsshubRoute || resolved.inputUrl,
+  );
+  const displayName = tweets[0]?.authorName || username;
+
+  return {
+    title: displayName ? `Twitter @${displayName}` : "Twitter Feed",
+    platform: "twitter",
+    sourceType: "twitter",
+    inputUrl: resolved.inputUrl,
+    feedUrl: resolved.feedUrl,
+    siteUrl: username ? `https://twitter.com/${username}` : resolved.siteUrl,
+    domainKey: resolved.domainKey,
+    rsshubRoute: resolved.rsshubRoute,
+    items: tweets.slice(0, 3).map((tweet) => ({
+      title: buildTwitterTitle(tweet.text),
+      link: buildTwitterStatusUrl(tweet.screenName, tweet.id),
+      publishedAt: tweet.createdAt ? parseDate(tweet.createdAt)?.toISOString() ?? null : null,
+    })),
+  };
+}
+
+function getTwitterUsernameFromRouteOrUrl(value: string) {
+  const routeMatch = value.match(/\/twitter\/user\/([^/?#]+)/);
+
+  if (routeMatch) {
+    return decodeURIComponent(routeMatch[1]);
+  }
+
+  try {
+    const url = new URL(value);
+
+    if (url.hostname === "twitter.com" || url.hostname === "www.twitter.com") {
+      return url.pathname.split("/").filter(Boolean)[0] || null;
+    }
+
+    if (url.hostname === "x.com" || url.hostname === "www.x.com") {
+      return url.pathname.split("/").filter(Boolean)[0] || null;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTwitterEmbeddedTimeline(
+  resolved: ResolvedFeedInput,
+): Promise<TwitterEmbeddedTweet[]> {
+  const username = getTwitterUsernameFromRouteOrUrl(
+    resolved.rsshubRoute || resolved.inputUrl,
+  );
+
+  if (!username || username.startsWith("+")) {
+    throw new Error("Twitter 用户名无效。");
+  }
+
+  return fetchCachedTwitterEmbeddedTimeline(username);
+}
+
+export function __resetTwitterEmbeddedTimelineCacheForTests() {
+  twitterEmbeddedTimelineCache.clear();
+  twitterEmbeddedTimelineRequests.clear();
+  twitterGraphqlQueryIdsCache = null;
+  twitterGraphqlQueryIdsRequest = null;
+}
+
+async function fetchCachedTwitterEmbeddedTimeline(username: string) {
+  const cacheKey = username.toLowerCase();
+  const now = Date.now();
+  const cached = twitterEmbeddedTimelineCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > now) {
+    return cached.tweets;
+  }
+
+  const activeRequest = twitterEmbeddedTimelineRequests.get(cacheKey);
+
+  if (activeRequest) {
+    return activeRequest;
+  }
+
+  const request = fetchTwitterWebGraphqlTimeline(username)
+    .catch((error) => {
+      if (cached && cached.staleUntil > Date.now() && isTwitterTransientError(error)) {
+        return cached.tweets;
+      }
+
+      return fetchTwitterNitterTimeline(username).catch(() =>
+        fetchFreshTwitterEmbeddedTimeline(username),
+      ).catch((embeddedError) => {
+        if (
+          cached &&
+          cached.staleUntil > Date.now() &&
+          isTwitterTransientError(embeddedError)
+        ) {
+          return cached.tweets;
+        }
+
+        return fetchTwitterWebGraphqlHighlightsTimeline(username).catch(() => {
+          throw embeddedError;
+        });
+      });
+    })
+    .then((tweets) => {
+      const sortedTweets = sortTwitterTweetsByPublishedAtDesc(tweets);
+
+      twitterEmbeddedTimelineCache.set(cacheKey, {
+        tweets: sortedTweets,
+        expiresAt: Date.now() + TWITTER_EMBEDDED_TIMELINE_CACHE_TTL_MS,
+        staleUntil: Date.now() + TWITTER_EMBEDDED_TIMELINE_STALE_TTL_MS,
+      });
+
+      return sortedTweets;
+    })
+    .finally(() => {
+      twitterEmbeddedTimelineRequests.delete(cacheKey);
+    });
+
+  twitterEmbeddedTimelineRequests.set(cacheKey, request);
+
+  return request;
+}
+
+async function fetchFreshTwitterEmbeddedTimeline(username: string) {
+  const url = new URL(
+    `https://syndication.twitter.com/srv/timeline-profile/screen-name/${encodeURIComponent(username)}`,
+  );
+  url.searchParams.set("dnt", "true");
+  url.searchParams.set("lang", "en");
+  const html = await fetchTwitterEmbeddedTimelineHtml(url);
+  const tweets = parseTwitterEmbeddedTimelineHtml(html);
+
+  if (!tweets.length) {
+    throw new Error("Twitter embedded timeline 没有返回可用内容。");
+  }
+
+  return sortTwitterTweetsByPublishedAtDesc(tweets);
+}
+
+async function fetchTwitterEmbeddedTimelineHtml(url: URL) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: TWITTER_EMBEDDED_ACCEPT,
+      "Accept-Language": TWITTER_ACCEPT_LANGUAGE,
+      Referer: "https://platform.twitter.com/",
+      "User-Agent": TWITTER_USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    const error = new Error(`Twitter embedded timeline 返回 ${response.status}。`, {
+      cause: response.status,
+    });
+
+    if (isTwitterEmbeddedCurlFallbackStatus(response.status)) {
+      return fetchTwitterEmbeddedTimelineHtmlWithCurl(url).catch(() => {
+        throw error;
+      });
+    }
+
+    throw error;
+  }
+
+  return response.text();
+}
+
+async function fetchTwitterEmbeddedTimelineHtmlWithCurl(url: URL) {
+  const { stdout } = await execFileAsync(
+    "curl",
+    [
+      "--fail",
+      "--location",
+      "--silent",
+      "--show-error",
+      "--compressed",
+      "--max-time",
+      "20",
+      "--user-agent",
+      TWITTER_USER_AGENT,
+      "--header",
+      `Accept: ${TWITTER_EMBEDDED_ACCEPT}`,
+      "--header",
+      `Accept-Language: ${TWITTER_ACCEPT_LANGUAGE}`,
+      "--referer",
+      "https://platform.twitter.com/",
+      url.toString(),
+    ],
+    {
+      maxBuffer: 2 * 1024 * 1024,
+    },
+  );
+
+  if (!stdout.trim()) {
+    throw new Error("Twitter embedded timeline curl 没有返回内容。");
+  }
+
+  return stdout;
+}
+
+function isTwitterEmbeddedCurlFallbackStatus(status: number) {
+  return status === 403 || status === 429 || status === 503;
+}
+
+function parseTwitterEmbeddedTimelineHtml(html: string) {
+  const jsonText = html.match(
+    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+  )?.[1];
+
+  if (!jsonText) {
+    throw new Error("Twitter embedded timeline 缺少数据。");
+  }
+
+  const payload = JSON.parse(jsonText) as unknown;
+  const pageProps = getRecordField(getRecordField(getRecordField(payload)?.props)?.pageProps);
+  const timeline = getRecordField(pageProps?.timeline);
+  const entries = Array.isArray(timeline?.entries) ? timeline.entries : [];
+  const tweets = entries
+    .map(extractTwitterEmbeddedTweet)
+    .filter((tweet): tweet is TwitterEmbeddedTweet => Boolean(tweet));
+
+  return tweets;
+}
+
+function isTwitterTransientError(error: unknown) {
+  const message = error instanceof Error ? error.message : `${error}`;
+
+  return (
+    message.includes("Twitter embedded timeline 返回 429") ||
+    message.includes("Twitter embedded timeline 返回 503") ||
+    message.includes("Twitter Web GraphQL 返回 429") ||
+    message.includes("Twitter Web GraphQL 返回 503")
+  );
+}
+
+async function fetchTwitterWebGraphqlTimeline(username: string) {
+  const { ids, guestToken } = await getTwitterWebGraphqlContext();
+  const userUrl = buildTwitterGraphqlUrl(ids.UserByScreenName, "UserByScreenName", {
+    variables: {
+      screen_name: username,
+      withSafetyModeUserFields: true,
+    },
+    features: buildTwitterGraphqlFeatures(),
+  });
+  const userPayload = await fetchTwitterGraphqlJson(userUrl, guestToken);
+  const user = getTwitterGraphqlUser(userPayload);
+  const userId = getStringField(user?.rest_id);
+
+  if (!userId) {
+    throw new Error("Twitter Web GraphQL 没有返回用户 ID。");
+  }
+
+  const tweets = await fetchTwitterGraphqlTweets(
+    ids.UserTweets,
+    "UserTweets",
+    userId,
+    username,
+    guestToken,
+  );
+
+  if (!tweets.length) {
+    throw new Error("Twitter Web GraphQL 没有返回可用内容。");
+  }
+
+  return sortTwitterTweetsByPublishedAtDesc(tweets);
+}
+
+async function fetchTwitterWebGraphqlHighlightsTimeline(username: string) {
+  const { ids, guestToken } = await getTwitterWebGraphqlContext();
+  const userUrl = buildTwitterGraphqlUrl(ids.UserByScreenName, "UserByScreenName", {
+    variables: {
+      screen_name: username,
+      withSafetyModeUserFields: true,
+    },
+    features: buildTwitterGraphqlFeatures(),
+  });
+  const userPayload = await fetchTwitterGraphqlJson(userUrl, guestToken);
+  const user = getTwitterGraphqlUser(userPayload);
+  const userId = getStringField(user?.rest_id);
+
+  if (!userId) {
+    throw new Error("Twitter Web GraphQL 没有返回用户 ID。");
+  }
+
+  const tweets = await fetchTwitterGraphqlTweets(
+    ids.UserHighlightsTweets,
+    "UserHighlightsTweets",
+    userId,
+    username,
+    guestToken,
+    { allowHighlightComponents: true },
+  );
+
+  if (!tweets.length) {
+    throw new Error("Twitter Web GraphQL highlights 没有返回可用内容。");
+  }
+
+  return sortTwitterTweetsByPublishedAtDesc(tweets);
+}
+
+async function fetchTwitterNitterTimeline(username: string) {
+  const rssUrl = buildTwitterNitterSearchRssUrl(username);
+  const response = await fetch(rssUrl, {
+    headers: {
+      Accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
+      "User-Agent": TWITTER_USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Nitter RSS 返回 ${response.status}。`);
+  }
+
+  const body = await response.text();
+
+  if (!body.trimStart().startsWith("<?xml") && !body.includes("<rss")) {
+    throw new Error("Nitter RSS 没有返回可用内容。");
+  }
+
+  const feed = (await parser.parseString(body)) as ParsedFeed;
+  const tweets = feed.items
+    .map((item) => extractTwitterNitterTweet(item, username))
+    .filter((tweet): tweet is TwitterEmbeddedTweet => Boolean(tweet));
+
+  if (!tweets.length) {
+    throw new Error("Nitter RSS 没有返回可用推文。");
+  }
+
+  return sortTwitterTweetsByPublishedAtDesc(tweets);
+}
+
+function buildTwitterNitterSearchRssUrl(username: string) {
+  const url = new URL("/search/rss", TWITTER_NITTER_RSS_BASE_URL);
+  url.searchParams.set("f", "tweets");
+  url.searchParams.set("q", `from:${username} -filter:replies -filter:retweets`);
+
+  return url;
+}
+
+function extractTwitterNitterTweet(
+  item: ParsedItem,
+  fallbackUsername: string,
+): TwitterEmbeddedTweet | null {
+  const id =
+    getTwitterStatusIdFromValue(item.guid) ||
+    getTwitterStatusIdFromValue(item.link);
+  const text = item.title || item.contentSnippet || "";
+  const screenName =
+    (item.creator || item.author || fallbackUsername).trim().replace(/^@/, "") ||
+    fallbackUsername;
+  const authorName = item.author && !item.author.startsWith("@") ? item.author : null;
+
+  if (!id || !text || !screenName) {
+    return null;
+  }
+
+  const contentHtml = item["content:encoded"] || item.content || "";
+  const media = extractTwitterNitterMedia(contentHtml);
+
+  return {
+    id,
+    text,
+    authorName,
+    screenName,
+    avatarUrl: null,
+    createdAt: item.isoDate || item.pubDate || null,
+    thumbnailUrl: media[0]?.posterUrl || media[0]?.url || null,
+    media,
+    metrics: {
+      replies: null,
+      reposts: null,
+      likes: null,
+      views: null,
+    },
+    raw: item,
+  };
+}
+
+function extractTwitterNitterMedia(contentHtml: string) {
+  const media = new Map<string, TwitterMediaItem>();
+
+  for (const match of contentHtml.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) {
+    const url = normalizeTwitterNitterMediaUrl(match[1]);
+
+    if (url && !media.has(url)) {
+      media.set(url, {
+        type: "photo",
+        url,
+        posterUrl: null,
+      });
+    }
+  }
+
+  return [...media.values()];
+}
+
+function normalizeTwitterNitterMediaUrl(value: string) {
+  try {
+    const url = new URL(value, TWITTER_NITTER_RSS_BASE_URL);
+
+    if (url.hostname === new URL(TWITTER_NITTER_RSS_BASE_URL).hostname) {
+      url.protocol = "https:";
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTwitterGraphqlTweets(
+  queryId: string,
+  operationName: "UserTweets" | "UserHighlightsTweets",
+  userId: string,
+  username: string,
+  guestToken: string,
+  options?: { allowHighlightComponents?: boolean },
+) {
+  const tweetsUrl = buildTwitterGraphqlUrl(queryId, operationName, {
+    variables: {
+      userId,
+      count: 20,
+      includePromotedContent: false,
+      withQuickPromoteEligibilityTweetFields: true,
+      withVoice: true,
+      withV2Timeline: true,
+    },
+    features: buildTwitterGraphqlFeatures(),
+  });
+  const tweetsPayload = await fetchTwitterGraphqlJson(
+    tweetsUrl,
+    guestToken,
+    `https://x.com/${username}`,
+  );
+
+  return extractTwitterGraphqlTweets(tweetsPayload, options);
+}
+
+async function getTwitterWebGraphqlContext() {
+  const [ids, guestToken] = await Promise.all([
+    resolveTwitterGraphqlQueryIds(),
+    activateTwitterGuestToken(),
+  ]);
+
+  return { ids, guestToken };
+}
+
+async function resolveTwitterGraphqlQueryIds(): Promise<TwitterGraphqlQueryIds> {
+  const now = Date.now();
+
+  if (twitterGraphqlQueryIdsCache && twitterGraphqlQueryIdsCache.expiresAt > now) {
+    return twitterGraphqlQueryIdsCache.ids;
+  }
+
+  if (twitterGraphqlQueryIdsRequest) {
+    return twitterGraphqlQueryIdsRequest;
+  }
+
+  twitterGraphqlQueryIdsRequest = fetchFreshTwitterGraphqlQueryIds()
+    .catch(() => TWITTER_GRAPHQL_FALLBACK_QUERY_IDS)
+    .then((ids) => {
+      twitterGraphqlQueryIdsCache = {
+        ids,
+        expiresAt: Date.now() + TWITTER_GRAPHQL_QUERY_ID_CACHE_TTL_MS,
+      };
+
+      return ids;
+    })
+    .finally(() => {
+      twitterGraphqlQueryIdsRequest = null;
+    });
+
+  return twitterGraphqlQueryIdsRequest;
+}
+
+async function fetchFreshTwitterGraphqlQueryIds(): Promise<TwitterGraphqlQueryIds> {
+  const pageResponse = await fetch("https://x.com", {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent": TWITTER_USER_AGENT,
+    },
+  });
+
+  if (!pageResponse.ok) {
+    throw new Error(`Twitter Web 首页返回 ${pageResponse.status}。`);
+  }
+
+  const html = await pageResponse.text();
+  const mainHash = html.match(/\/client-web\/main\.([a-z0-9]+)\./)?.[1];
+
+  if (!mainHash) {
+    throw new Error("Twitter Web 首页缺少 main bundle。");
+  }
+
+  const scriptResponse = await fetch(
+    `https://abs.twimg.com/responsive-web/client-web/main.${mainHash}.js`,
+    {
+      headers: {
+        Accept: "application/javascript,*/*;q=0.8",
+        "User-Agent": TWITTER_USER_AGENT,
+      },
+    },
+  );
+
+  if (!scriptResponse.ok) {
+    throw new Error(`Twitter Web main bundle 返回 ${scriptResponse.status}。`);
+  }
+
+  const script = await scriptResponse.text();
+  const ids: Partial<TwitterGraphqlQueryIds> = {};
+
+  for (const match of script.matchAll(/queryId:"([^"]+?)".+?operationName:"([^"]+?)"/g)) {
+    const [, queryId, operationName] = match;
+
+    if (
+      operationName === "UserByScreenName" ||
+      operationName === "UserTweets" ||
+      operationName === "UserHighlightsTweets"
+    ) {
+      ids[operationName] = queryId;
+    }
+  }
+
+  return {
+    UserByScreenName: ids.UserByScreenName || TWITTER_GRAPHQL_FALLBACK_QUERY_IDS.UserByScreenName,
+    UserTweets: ids.UserTweets || TWITTER_GRAPHQL_FALLBACK_QUERY_IDS.UserTweets,
+    UserHighlightsTweets:
+      ids.UserHighlightsTweets ||
+      TWITTER_GRAPHQL_FALLBACK_QUERY_IDS.UserHighlightsTweets,
+  };
+}
+
+async function activateTwitterGuestToken() {
+  const response = await fetch("https://api.x.com/1.1/guest/activate.json", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${TWITTER_GRAPHQL_BEARER_TOKEN}`,
+      "User-Agent": TWITTER_USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Twitter guest token 返回 ${response.status}。`);
+  }
+
+  const payload = (await response.json()) as unknown;
+  const guestToken = getStringField(getRecordField(payload)?.guest_token);
+
+  if (!guestToken) {
+    throw new Error("Twitter guest token 缺失。");
+  }
+
+  return guestToken;
+}
+
+function buildTwitterGraphqlUrl(
+  queryId: string,
+  operationName: "UserByScreenName" | "UserTweets" | "UserHighlightsTweets",
+  params: { variables: Record<string, unknown>; features: Record<string, boolean> },
+) {
+  const url = new URL(`https://x.com/i/api/graphql/${queryId}/${operationName}`);
+  url.searchParams.set("variables", JSON.stringify(params.variables));
+  url.searchParams.set("features", JSON.stringify(params.features));
+
+  return url;
+}
+
+async function fetchTwitterGraphqlJson(
+  url: URL,
+  guestToken: string,
+  referer = "https://x.com/",
+) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${TWITTER_GRAPHQL_BEARER_TOKEN}`,
+      Referer: referer,
+      "User-Agent": TWITTER_USER_AGENT,
+      "x-guest-token": guestToken,
+      "x-twitter-active-user": "yes",
+      "x-twitter-client-language": "en",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Twitter Web GraphQL 返回 ${response.status}。`);
+  }
+
+  return response.json() as Promise<unknown>;
+}
+
+function buildTwitterGraphqlFeatures() {
+  return {
+    rweb_video_screen_enabled: false,
+    profile_label_improvements_pcf_label_in_post_enabled: true,
+    rweb_tipjar_consumption_enabled: true,
+    responsive_web_graphql_exclude_directive_enabled: true,
+    verified_phone_label_enabled: false,
+    creator_subscriptions_tweet_preview_api_enabled: true,
+    responsive_web_graphql_timeline_navigation_enabled: true,
+    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+    premium_content_api_read_enabled: false,
+    communities_web_enable_tweet_community_results_fetch: true,
+    c9s_tweet_anatomy_moderator_badge_enabled: true,
+    responsive_web_grok_analyze_button_fetch_trends_enabled: false,
+    responsive_web_grok_analyze_post_followups_enabled: true,
+    responsive_web_jetfuel_frame: false,
+    responsive_web_grok_share_attachment_enabled: true,
+    articles_preview_enabled: true,
+    responsive_web_edit_tweet_api_enabled: true,
+    graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+    view_counts_everywhere_api_enabled: true,
+    longform_notetweets_consumption_enabled: true,
+    responsive_web_twitter_article_tweet_consumption_enabled: true,
+    tweet_awards_web_tipping_enabled: false,
+    responsive_web_grok_show_grok_translated_post: false,
+    responsive_web_grok_analysis_button_from_backend: true,
+    creator_subscriptions_quote_tweet_preview_enabled: false,
+    freedom_of_speech_not_reach_fetch_enabled: true,
+    standardized_nudges_misinfo: true,
+    tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+    longform_notetweets_rich_text_read_enabled: true,
+    longform_notetweets_inline_media_enabled: true,
+    responsive_web_grok_image_annotation_enabled: true,
+    responsive_web_enhance_cards_enabled: false,
+  };
+}
+
+function extractTwitterEmbeddedTweet(entry: unknown): TwitterEmbeddedTweet | null {
+  const entryRecord = getRecordField(entry);
+  const content = getRecordField(entryRecord?.content);
+  const tweet = getRecordField(content?.tweet);
+
+  if (!tweet) {
+    return null;
+  }
+
+  const id =
+    getStringField(tweet.id_str) ||
+    getStringField(tweet.conversation_id_str) ||
+    getTwitterStatusIdFromValue(entryRecord?.entry_id) ||
+    getTwitterStatusIdFromValue(tweet.permalink);
+  const text = getStringField(tweet.full_text) || getStringField(tweet.text);
+  const user = getRecordField(tweet.user);
+  const screenName = getStringField(user?.screen_name);
+
+  if (!id || !text || !screenName) {
+    return null;
+  }
+
+  return {
+    id,
+    text,
+    authorName: getStringField(user?.name),
+    screenName,
+    avatarUrl:
+      getStringField(user?.profile_image_url_https) ||
+      getStringField(user?.profile_image_url) ||
+      null,
+    createdAt: getStringField(tweet.created_at),
+    thumbnailUrl: getTwitterTweetThumbnail(tweet),
+    media: getTwitterTweetMedia(tweet),
+    metrics: getTwitterTweetMetrics(tweet),
+    raw: tweet,
+  };
+}
+
+function getTwitterStatusIdFromValue(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return value.match(/(?:tweet-|status\/)(\d+)/)?.[1] ?? null;
+}
+
+function getTwitterTweetThumbnail(tweet: Record<string, unknown>) {
+  const firstMedia = getTwitterTweetMedia(tweet)[0];
+
+  return firstMedia?.posterUrl || firstMedia?.url || null;
+}
+
+function getTwitterTweetMedia(tweet: Record<string, unknown>) {
+  const extendedEntities = getRecordField(tweet.extended_entities);
+  const entities = getRecordField(tweet.entities);
+  const media = Array.isArray(extendedEntities?.media)
+    ? extendedEntities.media
+    : Array.isArray(entities?.media)
+      ? entities.media
+      : [];
+
+  return media.filter(isRecord).flatMap((item): TwitterMediaItem[] => {
+    const mediaUrl = getStringField(item.media_url_https) || getStringField(item.media_url);
+    const type = getStringField(item.type);
+
+    if (type === "video" || type === "animated_gif") {
+      const videoInfo = getRecordField(item.video_info);
+      const variants = Array.isArray(videoInfo?.variants) ? videoInfo.variants : [];
+      const mp4Variant = variants
+        .filter(isRecord)
+        .filter((variant) => getStringField(variant.content_type) === "video/mp4")
+        .sort((left, right) => {
+          const leftBitrate = Number(getRecordField(left)?.bitrate || 0);
+          const rightBitrate = Number(getRecordField(right)?.bitrate || 0);
+
+          return rightBitrate - leftBitrate;
+        })
+        .find(isRecord);
+      const videoUrl = getStringField(mp4Variant?.url);
+
+      return videoUrl
+        ? [{ type: "video", url: videoUrl, posterUrl: mediaUrl || null }]
+        : mediaUrl
+          ? [{ type: "photo", url: mediaUrl, posterUrl: null }]
+          : [];
+    }
+
+    return mediaUrl ? [{ type: "photo", url: mediaUrl, posterUrl: null }] : [];
+  });
+}
+
+function getTwitterTweetMetrics(
+  tweet: Record<string, unknown>,
+  rootTweet?: Record<string, unknown> | null,
+): TwitterTweetMetrics {
+  const views = getRecordField(rootTweet?.views);
+
+  return {
+    replies: getNumberField(tweet.reply_count),
+    reposts: getNumberField(tweet.retweet_count),
+    likes: getNumberField(tweet.favorite_count),
+    views: getNumberField(views?.count) || getNumberField(tweet.view_count),
+  };
+}
+
+function getTwitterGraphqlUser(payload: unknown) {
+  const data = getRecordField(getRecordField(payload)?.data);
+  const user = getRecordField(data?.user);
+  const result = unwrapTwitterGraphqlUser(getRecordField(user?.result));
+
+  return result;
+}
+
+function extractTwitterGraphqlTweets(
+  payload: unknown,
+  options?: { allowHighlightComponents?: boolean },
+) {
+  const tweets = new Map<string, TwitterEmbeddedTweet>();
+  let sawOnlyPinnedOrHighlights = false;
+  const timeline = getTwitterGraphqlTimeline(payload);
+  const instructions = Array.isArray(timeline?.instructions)
+    ? timeline.instructions
+    : [];
+
+  for (const instruction of instructions) {
+    const instructionRecord = getRecordField(instruction);
+    const entries = [
+      getRecordField(instructionRecord?.entry),
+      ...(Array.isArray(instructionRecord?.entries)
+        ? instructionRecord.entries.map(getRecordField)
+        : []),
+    ].filter((entry): entry is Record<string, unknown> => Boolean(entry));
+
+    for (const entry of entries) {
+      const entryId = getStringField(entry.entryId) || getStringField(entry.entry_id);
+      const content = getRecordField(entry.content);
+      const component = getStringField(getRecordField(content?.clientEventInfo)?.component);
+
+      if (entryId?.includes("cursor")) {
+        continue;
+      }
+
+      const isPinnedOrHighlight =
+        component === "pinned_tweets" ||
+        component === "profile_best_highlights" ||
+        component === "highlights";
+
+      if (component === "pinned_tweets") {
+        sawOnlyPinnedOrHighlights = true;
+        continue;
+      }
+
+      if (isPinnedOrHighlight && !options?.allowHighlightComponents) {
+        sawOnlyPinnedOrHighlights = true;
+        continue;
+      }
+
+      const tweetResults =
+        getRecordField(getRecordField(content?.itemContent)?.tweet_results) ||
+        getRecordField(
+          getRecordField(
+            getRecordField(
+              Array.isArray(content?.items)
+                ? getRecordField(content.items[0])?.item
+                : null,
+            )?.itemContent,
+          )?.tweet_results,
+        );
+      const tweet = unwrapTwitterGraphqlTweet(getRecordField(tweetResults?.result));
+
+      if (!tweet) {
+        continue;
+      }
+
+      const normalized = extractTwitterGraphqlTweet(tweet);
+
+      if (normalized && !tweets.has(normalized.id)) {
+        tweets.set(normalized.id, normalized);
+      }
+    }
+  }
+
+  if (!tweets.size && sawOnlyPinnedOrHighlights) {
+    throw new Error(TWITTER_RSSHUB_CONFIG_MESSAGE);
+  }
+
+  return [...tweets.values()];
+}
+
+function getTwitterGraphqlTimeline(payload: unknown) {
+  const data = getRecordField(getRecordField(payload)?.data);
+  const user = getRecordField(data?.user);
+  const result = getRecordField(user?.result);
+  const timelineV2 = getRecordField(getRecordField(result?.timeline_v2)?.timeline);
+  const timeline = getRecordField(getRecordField(result?.timeline)?.timeline);
+
+  return timelineV2 || timeline;
+}
+
+function unwrapTwitterGraphqlTweet(tweet: Record<string, unknown> | null) {
+  if (!tweet) {
+    return null;
+  }
+
+  if (tweet.__typename === "TweetWithVisibilityResults") {
+    return getRecordField(tweet.tweet);
+  }
+
+  if (tweet.__typename === "TweetTombstone" || tweet.__typename === "TweetUnavailable") {
+    return null;
+  }
+
+  return tweet;
+}
+
+function unwrapTwitterGraphqlUser(user: Record<string, unknown> | null) {
+  if (!user) {
+    return null;
+  }
+
+  if (user.__typename === "UserUnavailable") {
+    return null;
+  }
+
+  return user;
+}
+
+function userAvatarUrlFromGraphqlUser(user: Record<string, unknown> | null) {
+  const avatar = getRecordField(user?.avatar);
+  const avatarImage = getRecordField(avatar?.image_url);
+  const legacy = getRecordField(user?.legacy);
+
+  return (
+    getStringField(avatarImage?.url) ||
+    getStringField(avatar?.image_url) ||
+    getStringField(user?.profile_image_url_https) ||
+    getStringField(legacy?.profile_image_url_https)
+  );
+}
+
+function extractTwitterGraphqlTweet(
+  tweet: Record<string, unknown>,
+): TwitterEmbeddedTweet | null {
+  const legacy = getRecordField(tweet.legacy);
+  const id = getStringField(tweet.rest_id) || getStringField(legacy?.id_str);
+  const noteTweet = getRecordField(tweet.note_tweet);
+  const noteTweetResults = getRecordField(noteTweet?.note_tweet_results);
+  const noteTweetResult = getRecordField(noteTweetResults?.result);
+  const text =
+    getStringField(noteTweetResult?.text) ||
+    getStringField(legacy?.full_text) ||
+    getStringField(legacy?.text);
+  const core = getRecordField(tweet.core);
+  const userResults = getRecordField(core?.user_results);
+  const user = unwrapTwitterGraphqlUser(getRecordField(userResults?.result));
+  const userCore = getRecordField(user?.core);
+  const userLegacy = getRecordField(user?.legacy);
+  const screenName =
+    getStringField(userCore?.screen_name) ||
+    getStringField(userLegacy?.screen_name);
+
+  if (!id || !text || !screenName) {
+    return null;
+  }
+
+  return {
+    id,
+    text,
+    authorName:
+      getStringField(userCore?.name) ||
+      getStringField(userLegacy?.name),
+    screenName,
+    avatarUrl:
+      getStringField(userAvatarUrlFromGraphqlUser(user)) ||
+      getStringField(userLegacy?.profile_image_url_https) ||
+      null,
+    createdAt: getStringField(legacy?.created_at),
+    thumbnailUrl: getTwitterTweetThumbnail(legacy || tweet),
+    media: getTwitterTweetMedia(legacy || tweet),
+    metrics: getTwitterTweetMetrics(legacy || tweet, tweet),
+    raw: tweet,
+  };
+}
+
+function normalizeTwitterEmbeddedTweet(tweet: TwitterEmbeddedTweet): NormalizedItem {
+  const contentUrl = buildTwitterStatusUrl(tweet.screenName, tweet.id);
+
+  return {
+    externalId: `twitter:${tweet.id}`,
+    title: buildTwitterTitle(tweet.text),
+    author: tweet.authorName || `@${tweet.screenName}`,
+    contentUrl,
+    publishedAt: tweet.createdAt ? parseDate(tweet.createdAt) : null,
+    summary: tweet.text,
+    contentHtml: buildTwitterContentHtml(tweet, contentUrl),
+    thumbnailUrl: tweet.thumbnailUrl,
+    mediaType: "status",
+    platform: "twitter",
+    embedUrl: null,
+    rawPayload: JSON.stringify(tweet.raw),
+  };
+}
+
+function buildTwitterContentHtml(tweet: TwitterEmbeddedTweet, contentUrl: string) {
+  const body = escapeHtml(tweet.text).replace(/\n/g, "<br>");
+  const mediaPayload = encodeURIComponent(JSON.stringify(tweet.media));
+  const metaPayload = encodeURIComponent(
+    JSON.stringify({
+      authorName: tweet.authorName,
+      screenName: tweet.screenName,
+      avatarUrl: tweet.avatarUrl,
+      createdAt: tweet.createdAt,
+      metrics: tweet.metrics,
+    }),
+  );
+
+  return `${body}<p><a href="${contentUrl}">Open on X</a></p><template data-lxy-twitter-media="${mediaPayload}" data-lxy-twitter-meta="${metaPayload}"></template>`;
+}
+
+function buildTwitterStatusUrl(screenName: string, tweetId: string) {
+  return `https://x.com/${screenName}/status/${tweetId}`;
+}
+
+function buildTwitterTitle(text: string) {
+  const title = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || "Twitter post";
+
+  return title.length > 120 ? `${title.slice(0, 117)}...` : title;
+}
+
+function sortTwitterTweetsByPublishedAtDesc(tweets: TwitterEmbeddedTweet[]) {
+  return [...tweets].sort((left, right) => {
+    const leftTime = left.createdAt ? parseDate(left.createdAt)?.getTime() ?? 0 : 0;
+    const rightTime = right.createdAt ? parseDate(right.createdAt)?.getTime() ?? 0 : 0;
+
+    return rightTime - leftTime;
+  });
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function buildParsedFeedPreview(
@@ -1462,6 +2635,20 @@ function getStringField(value: unknown) {
   return typeof value === "string" && value ? value : null;
 }
 
+function getNumberField(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/,/g, ""));
+
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
 }
@@ -1471,7 +2658,7 @@ function getMediaType(platform: FeedPlatform): FeedMediaType {
     return "video";
   }
 
-  if (platform === "weibo") {
+  if (platform === "weibo" || platform === "twitter") {
     return "status";
   }
 
@@ -1489,6 +2676,10 @@ function fallbackTitle(platform: FeedPlatform) {
 
   if (platform === "weibo") {
     return "Weibo Feed";
+  }
+
+  if (platform === "twitter") {
+    return "Twitter Feed";
   }
 
   return "RSS Feed";

@@ -3,16 +3,36 @@ import { afterEach, test } from "node:test";
 
 import { prisma } from "./prisma.ts";
 import { createSubscription, setReadLaterState } from "./repository.ts";
+import { __resetTwitterEmbeddedTimelineCacheForTests } from "./feed.ts";
 
 const originalFetch = globalThis.fetch;
+const originalRsshubBaseUrl = process.env.RSSHUB_BASE_URL;
 const testMid = "999999001";
 const testFeedUrl = `bilibili://user/video/${testMid}`;
+const testTwitterUsername = "lxy-reader-test-dotey";
+const testTwitterInputUrl = `rsshub://twitter/user/${testTwitterUsername}`;
+const testTwitterFeedUrl = `https://rsshub.app/twitter/user/${testTwitterUsername}?format=json`;
+const testConfiguredTwitterFeedUrl =
+  `http://rsshub.local:1200/twitter/user/${testTwitterUsername}?format=json`;
+const testTwitterEmbeddedTimelineUrl =
+  `https://syndication.twitter.com/srv/timeline-profile/screen-name/${testTwitterUsername}?dnt=true&lang=en`;
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
+  __resetTwitterEmbeddedTimelineCacheForTests();
+  if (originalRsshubBaseUrl === undefined) {
+    delete process.env.RSSHUB_BASE_URL;
+  } else {
+    process.env.RSSHUB_BASE_URL = originalRsshubBaseUrl;
+  }
   await prisma.subscription.deleteMany({
     where: {
-      feedUrl: testFeedUrl,
+      OR: [
+        { feedUrl: testFeedUrl },
+        { feedUrl: testTwitterFeedUrl },
+        { feedUrl: testConfiguredTwitterFeedUrl },
+        { inputUrl: testTwitterInputUrl },
+      ],
     },
   });
 });
@@ -167,6 +187,124 @@ function mockPreviewRiskBlock() {
   };
 }
 
+function buildTwitterEmbeddedTimelineHtml() {
+  return `<!DOCTYPE html><html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+    props: {
+      pageProps: {
+        timeline: {
+          entries: [
+            {
+              entry_id: "tweet-1996285439867556304",
+              content: {
+                tweet: {
+                  conversation_id_str: "1996285439867556304",
+                  created_at: "Wed Dec 03 18:28:32 +0000 2025",
+                  full_text: "A thread for my nana banana pro prompts 🧵 https://t.co/riAcKUtR6T",
+                  text: "A thread for my nana banana pro prompts 🧵 https://t.co/riAcKUtR6T",
+                  user: {
+                    name: "宝玉",
+                    screen_name: "dotey",
+                  },
+                  entities: {
+                    media: [
+                      {
+                        media_url_https: "https://pbs.twimg.com/media/G7Q7BCiWAAA-4sc.jpg",
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  })}</script></body></html>`;
+}
+
+function buildTwitterWebMainHtml() {
+  return '<!DOCTYPE html><html><head><link rel="preload" href="https://abs.twimg.com/responsive-web/client-web/main.testhash.js" as="script"></head></html>';
+}
+
+function buildTwitterWebMainScript() {
+  return 'queryId:"user-query",operationName:"UserByScreenName";queryId:"tweets-query",operationName:"UserTweets";';
+}
+
+function buildTwitterGraphqlUserPayload() {
+  return {
+    data: {
+      user: {
+        result: {
+          __typename: "User",
+          rest_id: "3178231",
+          core: {
+            name: "宝玉",
+            screen_name: "dotey",
+          },
+          legacy: {
+            name: "宝玉",
+            screen_name: "dotey",
+          },
+        },
+      },
+    },
+  };
+}
+
+function buildTwitterGraphqlTweetsPayload() {
+  return {
+    data: {
+      user: {
+        result: {
+          timeline_v2: {
+            timeline: {
+              instructions: [
+                {
+                  entries: [
+                    {
+                      entryId: "tweet-1996285439867556304",
+                      content: {
+                        itemContent: {
+                          tweet_results: {
+                            result: {
+                              __typename: "Tweet",
+                              rest_id: "1996285439867556304",
+                              core: {
+                                user_results: {
+                                  result: {
+                                    __typename: "User",
+                                    core: {
+                                      name: "宝玉",
+                                      screen_name: "dotey",
+                                    },
+                                    legacy: {
+                                      name: "宝玉",
+                                      screen_name: "dotey",
+                                    },
+                                  },
+                                },
+                              },
+                              legacy: {
+                                created_at: "Wed Dec 03 18:28:32 +0000 2025",
+                                full_text:
+                                  "A thread for my nana banana pro prompts 🧵 https://t.co/riAcKUtR6T",
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 test("createSubscription saves items through the Bilibili app fallback when the initial fetch is risk-blocked", async () => {
   mockPreviewSuccessAndFetchAppFallback();
 
@@ -205,6 +343,190 @@ test("createSubscription rejects a Bilibili subscription when preview cannot fet
   });
 
   assert.equal(saved, null);
+});
+
+test("createSubscription stores Twitter items through default RSSHub X embedded fallback", async () => {
+  process.env.RSSHUB_BASE_URL = "https://rsshub.app?format=json";
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+
+    if (url === testTwitterFeedUrl) {
+      return new Response("not found", { status: 404 });
+    }
+
+    assert.equal(url, testTwitterEmbeddedTimelineUrl);
+
+    return new Response(buildTwitterEmbeddedTimelineHtml(), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html",
+      },
+    });
+  };
+
+  const result = await createSubscription(testTwitterInputUrl);
+
+  assert.equal(result.subscription?.inputUrl, testTwitterInputUrl);
+  assert.equal(result.subscription?.feedUrl, testTwitterFeedUrl);
+  assert.equal(result.subscription?.sourceType, "twitter");
+  assert.equal(result.subscription?.status, "active");
+  assert.equal(result.initialFetchFailed, false);
+  assert.equal(result.initialFetchResult?.fetchedCount, 1);
+
+  const saved = await prisma.subscription.findFirst({
+    where: { inputUrl: testTwitterInputUrl },
+  });
+  const savedItem = await prisma.contentItem.findFirst({
+    where: {
+      subscriptionId: saved?.id,
+      externalId: "twitter:1996285439867556304",
+    },
+  });
+
+  assert.equal(saved?.title, "Twitter @宝玉");
+  assert.equal(savedItem?.platform, "twitter");
+  assert.equal(savedItem?.mediaType, "status");
+  assert.equal(
+    savedItem?.thumbnailUrl,
+    "https://pbs.twimg.com/media/G7Q7BCiWAAA-4sc.jpg",
+  );
+});
+
+test("createSubscription stores Twitter items through a configured RSSHub feed", async () => {
+  process.env.RSSHUB_BASE_URL = "http://rsshub.local:1200?format=json";
+
+  globalThis.fetch = async (input) => {
+    assert.equal(String(input), testConfiguredTwitterFeedUrl);
+
+    return new Response(
+      JSON.stringify({
+        title: "Twitter @宝玉",
+        link: "https://twitter.com/dotey",
+        items: [
+          {
+            title: "最新 Twitter 更新",
+            link: "https://x.com/dotey/status/3001",
+            pubDate: "2026-06-06T08:00:00.000Z",
+            author: "宝玉",
+            content_html:
+              '<p>最新 Twitter 更新</p><img src="https://pbs.twimg.com/media/latest.jpg">',
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  const result = await createSubscription(testTwitterInputUrl);
+
+  assert.equal(result.subscription?.inputUrl, testTwitterInputUrl);
+  assert.equal(result.subscription?.feedUrl, testConfiguredTwitterFeedUrl);
+  assert.equal(result.subscription?.sourceType, "twitter");
+  assert.equal(result.subscription?.status, "active");
+  assert.equal(result.initialFetchFailed, false);
+  assert.equal(result.initialFetchResult?.fetchedCount, 1);
+
+  const saved = await prisma.subscription.findUnique({
+    where: { feedUrl: testConfiguredTwitterFeedUrl },
+  });
+
+  assert.equal(saved?.title, "Twitter @宝玉");
+  const savedItem = await prisma.contentItem.findFirst({
+    where: {
+      subscriptionId: saved?.id,
+      externalId: "https://x.com/dotey/status/3001",
+    },
+  });
+
+  assert.equal(savedItem?.title, "最新 Twitter 更新");
+  assert.equal(savedItem?.platform, "twitter");
+  assert.equal(savedItem?.mediaType, "status");
+  assert.equal(savedItem?.contentHtml?.includes("latest.jpg"), true);
+});
+
+test("createSubscription stores Twitter items through the X Web GraphQL fallback", async () => {
+  process.env.RSSHUB_BASE_URL = "http://rsshub.local:1200?format=json";
+  let tweetsRequestCount = 0;
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+
+    if (url === testConfiguredTwitterFeedUrl) {
+      return new Response("not found", { status: 404 });
+    }
+
+    if (
+      url ===
+      testTwitterEmbeddedTimelineUrl
+    ) {
+      return new Response("rate limited", { status: 429 });
+    }
+
+    if (url === "https://x.com") {
+      return new Response(buildTwitterWebMainHtml(), {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+
+    if (url === "https://abs.twimg.com/responsive-web/client-web/main.testhash.js") {
+      return new Response(buildTwitterWebMainScript(), {
+        status: 200,
+        headers: { "Content-Type": "application/javascript" },
+      });
+    }
+
+    if (url === "https://api.x.com/1.1/guest/activate.json") {
+      return new Response(JSON.stringify({ guest_token: "guest-token" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.startsWith("https://x.com/i/api/graphql/user-query/UserByScreenName")) {
+      return new Response(JSON.stringify(buildTwitterGraphqlUserPayload()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.startsWith("https://x.com/i/api/graphql/tweets-query/UserTweets")) {
+      tweetsRequestCount += 1;
+
+      return new Response(JSON.stringify(buildTwitterGraphqlTweetsPayload()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  const result = await createSubscription(testTwitterInputUrl);
+
+  assert.equal(result.subscription?.sourceType, "twitter");
+  assert.equal(result.subscription?.status, "active");
+  assert.equal(result.initialFetchFailed, false);
+  assert.equal(result.initialFetchResult?.fetchedCount, 1);
+  assert.equal(tweetsRequestCount, 1);
+
+  const saved = await prisma.subscription.findUnique({
+    where: { feedUrl: testConfiguredTwitterFeedUrl },
+  });
+  const savedItem = await prisma.contentItem.findFirst({
+    where: {
+      subscriptionId: saved?.id,
+      externalId: "twitter:1996285439867556304",
+    },
+  });
+
+  assert.equal(saved?.title, "Twitter @宝玉");
+  assert.equal(savedItem?.platform, "twitter");
+  assert.equal(savedItem?.mediaType, "status");
 });
 
 test("setReadLaterState toggles an item in the Read Later list", async () => {
