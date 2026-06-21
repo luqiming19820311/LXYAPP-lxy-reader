@@ -401,7 +401,7 @@ function filterItemsByView(items: FeedItem[], view: View) {
   }
 
   if (view === "articles") {
-    return items.filter((item) => item.type === "Article");
+    return items.filter(isArticleViewItem);
   }
 
   if (view === "favorites") {
@@ -413,6 +413,10 @@ function filterItemsByView(items: FeedItem[], view: View) {
   }
 
   return items;
+}
+
+function isArticleViewItem(item: FeedItem) {
+  return item.type === "Article" || item.type === "Update";
 }
 
 function filterItemsBySearch(items: FeedItem[], query: string) {
@@ -470,6 +474,24 @@ function getRequestErrorMessage(error: unknown, fallback: string) {
   }
 
   return error instanceof Error ? error.message : fallback;
+}
+
+async function readJsonResponse<T>(response: Response, fallback: string) {
+  const text = await response.text();
+
+  if (!text) {
+    if (!response.ok) {
+      throw new Error(fallback);
+    }
+
+    return {} as T;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(fallback);
+  }
 }
 
 function isTwitterSubscriptionInput(value: string) {
@@ -828,7 +850,7 @@ export default function Home() {
   const navUnreadCounts: NavUnreadCounts = {
     all: unreadCount,
     videos: items.filter((item) => item.type === "Video" && !item.read).length,
-    articles: items.filter((item) => item.type === "Article" && !item.read).length,
+    articles: items.filter((item) => isArticleViewItem(item) && !item.read).length,
     favorites: items.filter((item) => item.favorite && !item.read).length,
   };
 
@@ -888,7 +910,10 @@ export default function Home() {
         },
         10000,
       );
-      const json = (await response.json()) as ItemStateResponse;
+      const json = await readJsonResponse<ItemStateResponse>(
+        response,
+        "操作失败。",
+      );
 
       if (!response.ok) {
         throw new Error(json.error || "操作失败。");

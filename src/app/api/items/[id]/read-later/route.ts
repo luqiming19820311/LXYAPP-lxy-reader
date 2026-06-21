@@ -1,15 +1,9 @@
-import { NextResponse } from "next/server";
 import { setReadLaterState } from "@/lib/repository";
-
-type ItemRouteContext = {
-  params: Promise<{ id: string }>;
-};
+import { handleItemStateMutation, type ItemRouteContext } from "../state-route";
 
 export async function POST(
   _request: Request,
   context: ItemRouteContext,
 ) {
-  const { id } = await context.params;
-  const state = await setReadLaterState(id, true);
-  return NextResponse.json({ state });
+  return handleItemStateMutation(context, (id) => setReadLaterState(id, true));
 }

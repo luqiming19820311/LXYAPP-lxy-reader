@@ -1,11 +1,9 @@
-import { NextResponse } from "next/server";
 import { setFavoriteState } from "@/lib/repository";
+import { handleItemStateMutation, type ItemRouteContext } from "../state-route";
 
 export async function POST(
   _request: Request,
-  context: RouteContext<"/api/items/[id]/favorite">,
+  context: ItemRouteContext,
 ) {
-  const { id } = await context.params;
-  const state = await setFavoriteState(id, true);
-  return NextResponse.json({ state });
+  return handleItemStateMutation(context, (id) => setFavoriteState(id, true));
 }
